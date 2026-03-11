@@ -94,6 +94,9 @@ def render_patch_grid_with_outcomes(
     plt.close()
 
 
+DEFAULT_DATA_DIR = "data/synthetic"
+
+
 def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | None:
     patches_file = None
     labels_file = None
@@ -112,6 +115,47 @@ def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | N
         io.BytesIO(labels_file.getvalue()), map_location="cpu", weights_only=True
     )
     return patches, labels
+
+
+def load_patches_labels_from_dir(
+    dir_path: str,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    p = Path(dir_path)
+    patches_path = p / "patches.pt"
+    labels_path = p / "labels.pt"
+    if not patches_path.exists() or not labels_path.exists():
+        return None
+    patches = torch.load(patches_path, map_location="cpu", weights_only=True)
+    labels = torch.load(labels_path, map_location="cpu", weights_only=True)
+    return patches, labels
+
+
+def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
+    dir_path = st.text_input(
+        "Data directory",
+        value=DEFAULT_DATA_DIR,
+        key=f"{tab_key}_dir",
+        help="Path to a folder containing patches.pt and labels.pt",
+    )
+    result = None
+    if dir_path:
+        result = load_patches_labels_from_dir(dir_path)
+        if result is not None:
+            st.success(f"Loaded from `{dir_path}`")
+        else:
+            st.warning(f"`{dir_path}` not found or missing patches.pt / labels.pt")
+
+    uploaded = st.file_uploader(
+        "Or drag-and-drop a folder to override",
+        accept_multiple_files="directory",
+        type=None,
+        key=f"{tab_key}_upload",
+    )
+    if uploaded:
+        result = load_patches_labels(uploaded)
+        if result is None:
+            st.error("Expected patches.pt and labels.pt in the selected folder.")
+    return result
 
 
 def _reset_generator_defaults() -> None:
@@ -176,25 +220,13 @@ def tab_generator() -> None:
 def tab_visualize() -> None:
     st.header("Visualize")
     st.markdown(
-        "Drag and drop a folder (or browse) containing `patches.pt` and `labels.pt` "
-        "from `run_generate`."
+        "Type a directory path or drag-and-drop a folder containing "
+        "`patches.pt` and `labels.pt` from `run_generate`."
     )
 
-    uploaded = st.file_uploader(
-        "Drop folder or browse",
-        accept_multiple_files="directory",
-        type=None,
-        help="Select a folder with patches.pt and labels.pt",
-        key="viz_upload",
-    )
-
-    if not uploaded:
-        st.info("Select a folder to visualize generated data.")
-        return
-
-    result = load_patches_labels(uploaded)
+    result = data_source_widget("viz")
     if result is None:
-        st.error("Expected patches.pt and labels.pt in the selected folder.")
+        st.info("Select a data source above to visualize generated data.")
         return
     patches, labels = result
 
@@ -221,25 +253,13 @@ def tab_visualize() -> None:
 def tab_detector() -> None:
     st.header("Detector")
     st.markdown(
-        "Upload a dataset, fit the **RX detector** on normal patches, "
-        "and explore its performance."
+        "Type a directory path or drag-and-drop a folder, then fit the **RX detector** "
+        "on normal patches and explore its performance."
     )
 
-    uploaded = st.file_uploader(
-        "Drop folder or browse",
-        accept_multiple_files="directory",
-        type=None,
-        help="Select a folder with patches.pt and labels.pt",
-        key="det_upload",
-    )
-
-    if not uploaded:
-        st.info("Select a folder to run the detector.")
-        return
-
-    result = load_patches_labels(uploaded)
+    result = data_source_widget("det")
     if result is None:
-        st.error("Expected patches.pt and labels.pt in the selected folder.")
+        st.info("Select a data source above to run the detector.")
         return
     patches, labels = result
 

@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import torch
 from sklearn.metrics import f1_score, precision_score, recall_score
@@ -5,6 +8,7 @@ from sklearn.metrics import f1_score, precision_score, recall_score
 from src.models.baselines import RXDetector
 from src.visualization.dashboards.sar_dashboard import (
     LABEL_NAMES,
+    load_patches_labels_from_dir,
     outcome_label,
     patch_to_display,
 )
@@ -53,6 +57,30 @@ def _make_patches(n: int = 100) -> tuple[torch.Tensor, torch.Tensor]:
 
     config = SpeckleSARGeneratorConfig(patch_size=16, n_looks=4, anomaly_ratio=0.2, seed=0)
     return SpeckleSARGenerator(config).generate(n)
+
+
+def test_load_patches_labels_from_dir_valid() -> None:
+    patches = torch.ones(10, 1, 16, 16)
+    labels = torch.zeros(10, dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        torch.save(patches, Path(tmp) / "patches.pt")
+        torch.save(labels, Path(tmp) / "labels.pt")
+        result = load_patches_labels_from_dir(tmp)
+    assert result is not None
+    patches_out, labels_out = result
+    assert patches_out.shape == (10, 1, 16, 16)
+    assert labels_out.shape == (10,)
+
+
+def test_load_patches_labels_from_dir_missing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        result = load_patches_labels_from_dir(tmp)
+    assert result is None
+
+
+def test_load_patches_labels_from_dir_nonexistent() -> None:
+    result = load_patches_labels_from_dir("/nonexistent/path")
+    assert result is None
 
 
 def test_detector_tab_score_shape() -> None:
