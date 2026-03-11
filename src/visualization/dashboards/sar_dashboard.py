@@ -16,6 +16,17 @@ st.set_page_config(page_title="SAR Anomaly Sandbox", layout="wide")
 LABEL_NAMES = {0: "Normal", 1: "Anomaly"}
 OUTCOME_COLORS = {"TP": "green", "TN": "blue", "FP": "orange", "FN": "red"}
 
+GEN_DEFAULTS: dict = {
+    "patch_size": 64,
+    "n_looks": 4,
+    "anomaly_ratio": 0.1,
+    "anomaly_size": 3,
+    "base_intensity": 1.0,
+    "anomaly_intensity": 3.0,
+    "seed": 42,
+    "n_samples": 16,
+}
+
 
 def patch_to_display(patch: np.ndarray) -> np.ndarray:
     arr = np.squeeze(patch)
@@ -103,23 +114,41 @@ def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | N
     return patches, labels
 
 
+def _reset_generator_defaults() -> None:
+    for key, val in GEN_DEFAULTS.items():
+        st.session_state[key] = val
+
+
 def tab_generator() -> None:
     st.header("Generator")
     st.markdown(
         "Experiment with synthetic SAR generator parameters and see the effect in real-time."
     )
 
+    for key, val in GEN_DEFAULTS.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
     col1, col2 = st.columns([1, 3])
     with col1:
-        patch_size = st.slider("Patch size", 16, 128, 64, 16)
-        n_looks = st.slider("Number of looks", 1, 16, 4)
-        anomaly_ratio = st.slider("Anomaly ratio", 0.0, 0.5, 0.1, 0.05)
-        anomaly_size = st.slider("Anomaly size", 2, 8, 3)
-        base_intensity = st.slider("Base intensity", 0.1, 2.0, 1.0, 0.1)
-        anomaly_intensity = st.slider("Anomaly intensity", 1.0, 5.0, 3.0, 0.5)
-        seed = st.number_input("Seed (optional)", min_value=0, value=42, step=1)
-        n_samples = st.slider("Samples to generate", 4, 32, 16, 4)
-        if st.button("Generate"):
+        patch_size = st.slider("Patch size", 16, 128, 64, 16, key="patch_size")
+        n_looks = st.slider("Number of looks", 1, 16, 4, key="n_looks")
+        anomaly_ratio = st.slider("Anomaly ratio", 0.0, 0.5, 0.1, 0.05, key="anomaly_ratio")
+        anomaly_size = st.slider("Anomaly size", 2, 8, 3, key="anomaly_size")
+        base_intensity = st.slider(
+            "Base intensity", 0.1, 2.0, 1.0, 0.1, key="base_intensity"
+        )
+        anomaly_intensity = st.slider(
+            "Anomaly intensity", 1.0, 5.0, 3.0, 0.5, key="anomaly_intensity"
+        )
+        seed = st.number_input("Seed (optional)", min_value=0, value=42, step=1, key="seed")
+        n_samples = st.slider("Samples to generate", 4, 32, 16, 4, key="n_samples")
+        col_gen, col_reset = st.columns(2)
+        with col_reset:
+            st.button("Reset to defaults", on_click=_reset_generator_defaults)
+        with col_gen:
+            generate_clicked = st.button("Generate")
+        if generate_clicked:
             config = SpeckleSARGeneratorConfig(
                 patch_size=patch_size,
                 n_looks=n_looks,
