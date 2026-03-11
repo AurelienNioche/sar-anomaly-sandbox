@@ -5,13 +5,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 import torch
+from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, roc_curve
 
 from src.data.generators import SpeckleSARGenerator
 from src.data.generators.speckle import SpeckleSARGeneratorConfig
+from src.models.baselines import RXDetector
 
 st.set_page_config(page_title="SAR Anomaly Sandbox", layout="wide")
 
 LABEL_NAMES = {0: "Normal", 1: "Anomaly"}
+OUTCOME_COLORS = {"TP": "green", "TN": "blue", "FP": "orange", "FN": "red"}
 
 
 def patch_to_display(patch: np.ndarray) -> np.ndarray:
@@ -40,6 +43,64 @@ def render_patch_grid(patches: torch.Tensor, labels: torch.Tensor, cols: int = 4
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
+
+
+def outcome_label(true: int, pred: int) -> str:
+    if true == 1 and pred == 1:
+        return "TP"
+    if true == 0 and pred == 0:
+        return "TN"
+    if true == 0 and pred == 1:
+        return "FP"
+    return "FN"
+
+
+def render_patch_grid_with_outcomes(
+    patches: torch.Tensor,
+    true_labels: torch.Tensor,
+    pred_labels: torch.Tensor,
+    cols: int = 4,
+    max_patches: int = 16,
+) -> None:
+    n = min(len(patches), max_patches)
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
+    if rows == 1 and cols == 1:
+        axes = np.array([[axes]])
+    elif rows == 1:
+        axes = axes.reshape(1, -1)
+    elif cols == 1:
+        axes = axes.reshape(-1, 1)
+    for idx, ax in enumerate(axes.flat):
+        if idx < n:
+            arr = patch_to_display(patches[idx].numpy())
+            ax.imshow(arr, cmap="gray")
+            oc = outcome_label(int(true_labels[idx]), int(pred_labels[idx]))
+            ax.set_title(oc, color=OUTCOME_COLORS[oc], fontweight="bold")
+        ax.axis("off")
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close()
+
+
+def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | None:
+    patches_file = None
+    labels_file = None
+    for f in uploaded:
+        name = Path(f.name).name
+        if name == "patches.pt":
+            patches_file = f
+        elif name == "labels.pt":
+            labels_file = f
+    if patches_file is None or labels_file is None:
+        return None
+    patches = torch.load(
+        io.BytesIO(patches_file.getvalue()), map_location="cpu", weights_only=True
+    )
+    labels = torch.load(
+        io.BytesIO(labels_file.getvalue()), map_location="cpu", weights_only=True
+    )
+    return patches, labels
 
 
 def tab_generator() -> None:
@@ -95,35 +156,18 @@ def tab_visualize() -> None:
         accept_multiple_files="directory",
         type=None,
         help="Select a folder with patches.pt and labels.pt",
+        key="viz_upload",
     )
 
     if not uploaded:
         st.info("Select a folder to visualize generated data.")
         return
 
-    patches_file = None
-    labels_file = None
-    for f in uploaded:
-        name = Path(f.name).name
-        if name == "patches.pt":
-            patches_file = f
-        elif name == "labels.pt":
-            labels_file = f
-
-    if patches_file is None or labels_file is None:
+    result = load_patches_labels(uploaded)
+    if result is None:
         st.error("Expected patches.pt and labels.pt in the selected folder.")
         return
-
-    patches = torch.load(
-        io.BytesIO(patches_file.getvalue()),
-        map_location="cpu",
-        weights_only=True,
-    )
-    labels = torch.load(
-        io.BytesIO(labels_file.getvalue()),
-        map_location="cpu",
-        weights_only=True,
-    )
+    patches, labels = result
 
     n = len(patches)
     st.metric("Total patches", n)
@@ -145,13 +189,130 @@ def tab_visualize() -> None:
         render_patch_grid(patches[:preview_n], labels[:preview_n], cols=4)
 
 
+def tab_detector() -> None:
+    st.header("Detector")
+    st.markdown(
+        "Upload a dataset, fit the **RX detector** on normal patches, "
+        "and explore its performance."
+    )
+
+    uploaded = st.file_uploader(
+        "Drop folder or browse",
+        accept_multiple_files="directory",
+        type=None,
+        help="Select a folder with patches.pt and labels.pt",
+        key="det_upload",
+    )
+
+    if not uploaded:
+        st.info("Select a folder to run the detector.")
+        return
+
+    result = load_patches_labels(uploaded)
+    if result is None:
+        st.error("Expected patches.pt and labels.pt in the selected folder.")
+        return
+    patches, labels = result
+
+    n_normal = int((labels == 0).sum().item())
+    train_frac = st.slider(
+        "Fraction of normal patches used for training",
+        min_value=0.1,
+        max_value=0.9,
+        value=0.5,
+        step=0.05,
+    )
+    n_train = max(1, int(n_normal * train_frac))
+
+    normal_patches = patches[labels == 0]
+    train_patches = normal_patches[:n_train]
+
+    st.caption(
+        f"Training on {n_train} normal patches — testing on all {len(patches)} patches."
+    )
+
+    if not st.button("Run RX Detector"):
+        st.info("Click **Run RX Detector** to fit and score.")
+        return
+
+    det = RXDetector().fit(train_patches)
+    scores = det.score(patches)
+
+    st.session_state["det_scores"] = scores
+    st.session_state["det_labels"] = labels
+    st.session_state["det_patches"] = patches
+
+    y_true = labels.numpy()
+    y_score = scores.numpy()
+
+    auc = roc_auc_score(y_true, y_score)
+    st.metric("ROC AUC", f"{auc:.3f}")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("ROC Curve")
+        fpr, tpr, _ = roc_curve(y_true, y_score)
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.plot(fpr, tpr, label=f"AUC = {auc:.3f}")
+        ax.plot([0, 1], [0, 1], "k--")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.legend()
+        st.pyplot(fig)
+        plt.close()
+
+    with col2:
+        st.subheader("Score Distribution")
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.hist(
+            y_score[y_true == 0],
+            bins=40,
+            alpha=0.6,
+            label="Normal",
+            density=True,
+        )
+        ax.hist(
+            y_score[y_true == 1],
+            bins=40,
+            alpha=0.6,
+            label="Anomaly",
+            density=True,
+        )
+        ax.set_xlabel("Anomaly score")
+        ax.legend()
+        st.pyplot(fig)
+        plt.close()
+
+    st.subheader("Threshold")
+    threshold = st.slider(
+        "Decision threshold",
+        min_value=float(y_score.min()),
+        max_value=float(y_score.max()),
+        value=float(np.percentile(y_score, 90)),
+        step=(float(y_score.max()) - float(y_score.min())) / 100,
+    )
+    preds = det.predict(patches, threshold=threshold).numpy()
+    col3, col4, col5 = st.columns(3)
+    col3.metric("Precision", f"{precision_score(y_true, preds, zero_division=0):.3f}")
+    col4.metric("Recall", f"{recall_score(y_true, preds, zero_division=0):.3f}")
+    col5.metric("F1", f"{f1_score(y_true, preds, zero_division=0):.3f}")
+
+    st.subheader("Patch grid — TP / TN / FP / FN")
+    st.caption("Green=TP, Blue=TN, Orange=FP, Red=FN")
+    pred_tensor = torch.tensor(preds)
+    render_patch_grid_with_outcomes(patches, labels, pred_tensor, cols=4, max_patches=16)
+
+
 def main() -> None:
     st.title("SAR Anomaly Sandbox")
-    tab1, tab2 = st.tabs(["Generator", "Visualize"])
+    tab1, tab2, tab3 = st.tabs(["Generator", "Visualize", "Detector"])
     with tab1:
         tab_generator()
     with tab2:
         tab_visualize()
+    with tab3:
+        tab_detector()
 
 
 if __name__ == "__main__":

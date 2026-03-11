@@ -26,9 +26,20 @@ streamlit run src/visualization/dashboards/sar_dashboard.py
 - Index slider to browse individual patches.
 - Grid preview of the first 16 patches.
 
+**Detector**
+
+- Drag and drop a folder (or browse) containing `patches.pt` and `labels.pt`.
+- Train split slider: choose the fraction of normal patches used to fit the RX detector.
+- "Run RX Detector" button fits the detector and scores all patches.
+- Displays:
+  - ROC curve with AUC
+  - Score distribution histogram (normal vs anomaly overlaid)
+  - Threshold slider with live precision/recall/F1
+  - Patch grid colour-coded by TP (green) / TN (blue) / FP (orange) / FN (red)
+
 ### Folder Format
 
-The Visualize tab expects a folder with:
+Both the Visualize and Detector tabs expect a folder with:
 
 - `patches.pt` — Tensor of shape (N, 1, H, W)
 - `labels.pt` — Tensor of shape (N,) with values 0 (normal) or 1 (anomaly)
