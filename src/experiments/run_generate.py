@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -34,7 +35,8 @@ def main() -> None:
     generator = SpeckleSARGenerator(gen_config)
     patches, labels = generator.generate(args.n_samples)
 
-    out_dir = Path(args.output)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    out_dir = Path(args.output) / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save(patches, out_dir / "patches.pt")
     torch.save(labels, out_dir / "labels.pt")
