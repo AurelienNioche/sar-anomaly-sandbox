@@ -50,3 +50,17 @@ pre-commit install
 - `run_train` — Train anomaly detection model
 - `run_eval` — Evaluate model on SAR data
 - `run_generate` — Generate synthetic SAR-like data
+
+## Synthetic Data
+
+Synthetic SAR patches with speckle and bright-target anomalies can be generated via `run_generate`. See [src/data/generators/README.md](src/data/generators/README.md) for how it works, why we use Gamma speckle, and what bright targets represent.
+
+## Dashboard
+
+Interactive Streamlit app to experiment with the generator and visualize generated data (including folder drag-and-drop):
+
+```bash
+streamlit run src/visualization/dashboards/sar_dashboard.py
+```
+
+See [src/visualization/dashboards/README.md](src/visualization/dashboards/README.md) for details.

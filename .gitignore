@@ -48,6 +48,7 @@ data/processed/*
 !data/processed/.gitkeep
 data/synthetic/*
 !data/synthetic/.gitkeep
+!data/synthetic/README.md
 
 # Jupyter
 .ipynb_checkpoints/
