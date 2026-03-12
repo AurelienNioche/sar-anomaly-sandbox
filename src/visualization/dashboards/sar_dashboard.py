@@ -316,6 +316,20 @@ def tab_visualize() -> None:
         render_patch_grid(patches[:preview_n], labels[:preview_n], cols=4)
 
 
+def _best_f1_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """Return the threshold on the ROC curve that maximises F1."""
+    _, _, thresholds = roc_curve(y_true, y_score)
+    best_thresh = float(thresholds[0])
+    best_f1 = 0.0
+    for t in thresholds:
+        preds = (y_score >= t).astype(int)
+        f1 = f1_score(y_true, preds, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thresh = float(t)
+    return best_thresh
+
+
 def tab_detector() -> None:
     st.header("Detector")
     st.markdown(
@@ -346,17 +360,21 @@ def tab_detector() -> None:
         f"Training on {n_train} normal patches — testing on all {len(patches)} patches."
     )
 
-    if not st.button("Run RX Detector"):
+    if st.button("Run RX Detector"):
+        det = RXDetector().fit(train_patches)
+        scores = det.score(patches)
+        st.session_state["det_scores"] = scores
+        st.session_state["det_labels"] = labels
+        st.session_state["det_patches"] = patches
+        st.session_state.pop("det_threshold", None)
+
+    if "det_scores" not in st.session_state:
         st.info("Click **Run RX Detector** to fit and score.")
         return
 
-    det = RXDetector().fit(train_patches)
-    scores = det.score(patches)
-
-    st.session_state["det_scores"] = scores
-    st.session_state["det_labels"] = labels
-    st.session_state["det_patches"] = patches
-
+    scores = st.session_state["det_scores"]
+    labels = st.session_state["det_labels"]
+    patches = st.session_state["det_patches"]
     y_true = labels.numpy()
     y_score = scores.numpy()
 
@@ -399,15 +417,19 @@ def tab_detector() -> None:
         st.pyplot(fig)
         plt.close()
 
+    default_threshold = st.session_state.get(
+        "det_threshold", _best_f1_threshold(y_true, y_score)
+    )
     st.subheader("Threshold")
     threshold = st.slider(
         "Decision threshold",
         min_value=float(y_score.min()),
         max_value=float(y_score.max()),
-        value=float(np.percentile(y_score, 90)),
+        value=float(np.clip(default_threshold, y_score.min(), y_score.max())),
         step=(float(y_score.max()) - float(y_score.min())) / 100,
+        key="det_threshold",
     )
-    preds = det.predict(patches, threshold=threshold).numpy()
+    preds = (y_score >= threshold).astype(int)
     col3, col4, col5 = st.columns(3)
     col3.metric("Precision", f"{precision_score(y_true, preds, zero_division=0):.3f}")
     col4.metric("Recall", f"{recall_score(y_true, preds, zero_division=0):.3f}")
