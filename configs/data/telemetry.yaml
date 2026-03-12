@@ -1,0 +1,14 @@
+n_channels: 7
+n_timesteps: 1000
+sampling_hz: 1.0
+noise_std: 0.1
+orbital_period_steps: 200
+anomaly_ratio: 0.05
+anomaly_types:
+  - spike
+  - step
+  - ramp
+  - correlation_break
+anomaly_min_duration: 5
+anomaly_max_duration: 30
+seed: 42

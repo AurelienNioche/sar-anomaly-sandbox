@@ -55,12 +55,28 @@ pre-commit install
 
 Synthetic SAR patches with speckle and bright-target anomalies can be generated via `run_generate`. See [src/data/generators/README.md](src/data/generators/README.md) for how it works, why we use Gamma speckle, and what bright targets represent.
 
-## Dashboard
+## Dashboards
 
-Interactive Streamlit app to experiment with the generator and visualize generated data (including folder drag-and-drop):
+**SAR imagery** — experiment with the speckle generator and run the RX detector:
 
 ```bash
 streamlit run src/visualization/dashboards/sar_dashboard.py
 ```
 
+**Satellite telemetry** — generate multivariate time series and compare statistical, ML, and deep learning anomaly detectors:
+
+```bash
+streamlit run src/visualization/dashboards/telemetry_dashboard.py
+```
+
 See [src/visualization/dashboards/README.md](src/visualization/dashboards/README.md) for details.
+
+## Telemetry Anomaly Detection
+
+Synthetic satellite telemetry (power, thermal, attitude, RF channels) with four anomaly types: spike, step, ramp, correlation break. Three detector families:
+
+- **Statistical**: `PerChannelZScore`, `MahalanobisDetector`, `CUSUMDetector`
+- **ML**: `IsolationForestDetector`, `OneClassSVMDetector`
+- **Deep**: `LSTMAutoencoderDetector`
+
+Config: `configs/data/telemetry.yaml`.

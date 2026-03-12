@@ -1,5 +1,3 @@
-import io
-from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -11,6 +9,13 @@ from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_sco
 from src.data.generators import SpeckleSARGenerator
 from src.data.generators.speckle import SpeckleSARGeneratorConfig
 from src.models.baselines import RXDetector
+from src.visualization.dashboards.data_io import (
+    load_tensors_from_dir,
+    load_tensors_from_upload,
+)
+from src.visualization.dashboards.data_io import (
+    save_run as _save_run,
+)
 
 st.set_page_config(page_title="SAR Anomaly Sandbox", layout="wide")
 
@@ -97,63 +102,21 @@ def render_patch_grid_with_outcomes(
 
 DEFAULT_DATA_DIR = "data/synthetic"
 
-
-def _find_latest_run(base: Path) -> Path | None:
-    """Return the most recently modified subdirectory of *base* that contains
-    both patches.pt and labels.pt, or None if none exists."""
-    candidates = sorted(
-        (d for d in base.iterdir() if d.is_dir()
-         and (d / "patches.pt").exists()
-         and (d / "labels.pt").exists()),
-        key=lambda d: d.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
+_FILENAMES = ("patches.pt", "labels.pt")
 
 
 def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | None:
-    patches_file = None
-    labels_file = None
-    for f in uploaded:
-        name = Path(f.name).name
-        if name == "patches.pt":
-            patches_file = f
-        elif name == "labels.pt":
-            labels_file = f
-    if patches_file is None or labels_file is None:
-        return None
-    patches = torch.load(
-        io.BytesIO(patches_file.getvalue()), map_location="cpu", weights_only=True
-    )
-    labels = torch.load(
-        io.BytesIO(labels_file.getvalue()), map_location="cpu", weights_only=True
-    )
-    return patches, labels
+    return load_tensors_from_upload(uploaded, _FILENAMES)  # type: ignore[return-value]
 
 
 def load_patches_labels_from_dir(
     dir_path: str,
 ) -> tuple[torch.Tensor, torch.Tensor, Path] | None:
-    """Load patches and labels from *dir_path*.
-
-    Timestamped run sub-folders take priority over flat files: if any valid
-    sub-folder exists the most recently modified one is used, regardless of
-    whether patches.pt / labels.pt also exist directly in dir_path.
-    Returns (patches, labels, resolved_path) or None.
-    """
-    p = Path(dir_path)
-    if not p.exists():
+    result = load_tensors_from_dir(dir_path, _FILENAMES)
+    if result is None:
         return None
-    latest = _find_latest_run(p)
-    if latest is not None:
-        resolved = latest
-    elif (p / "patches.pt").exists() and (p / "labels.pt").exists():
-        resolved = p
-    else:
-        return None
-    patches = torch.load(resolved / "patches.pt", map_location="cpu", weights_only=True)
-    labels = torch.load(resolved / "labels.pt", map_location="cpu", weights_only=True)
-    return patches, labels, resolved
+    tensors, resolved = result
+    return tensors[0], tensors[1], resolved
 
 
 def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -197,12 +160,7 @@ def save_run(
     base_dir: str = "data/synthetic",
 ) -> Path:
     """Save patches and labels to a timestamped sub-folder of *base_dir*."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    save_dir = Path(base_dir) / timestamp
-    save_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(patches, save_dir / "patches.pt")
-    torch.save(labels, save_dir / "labels.pt")
-    return save_dir
+    return _save_run({"patches.pt": patches, "labels.pt": labels}, base_dir)
 
 
 def _reset_generator_defaults() -> None:
