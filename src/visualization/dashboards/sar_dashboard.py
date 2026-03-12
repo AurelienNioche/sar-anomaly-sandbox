@@ -1,4 +1,5 @@
 import io
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -239,6 +240,22 @@ def tab_generator() -> None:
             patches, labels = gen.generate(n_samples)
             st.session_state["gen_patches"] = patches
             st.session_state["gen_labels"] = labels
+            st.session_state["gen_saved_path"] = None
+
+        if "gen_patches" in st.session_state:
+            if st.button("Save to disk"):
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                save_dir = Path("data/synthetic") / timestamp
+                save_dir.mkdir(parents=True, exist_ok=True)
+                torch.save(st.session_state["gen_patches"], save_dir / "patches.pt")
+                torch.save(st.session_state["gen_labels"], save_dir / "labels.pt")
+                st.session_state["gen_saved_path"] = str(save_dir)
+
+            if st.session_state.get("gen_saved_path"):
+                st.success(
+                    f"Saved to `{st.session_state['gen_saved_path']}` — "
+                    "paste this path in the Visualize or Detector tab."
+                )
 
     with col2:
         if "gen_patches" in st.session_state:
