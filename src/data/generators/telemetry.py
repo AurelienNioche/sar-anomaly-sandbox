@@ -6,7 +6,15 @@ import torch
 
 from src.utils.seed import set_seed
 
-CHANNEL_NAMES = ["power_v", "batt_soc", "temp_rf", "temp_obc", "gyro_x", "gyro_y", "reaction_wheel"]
+CHANNEL_NAMES = [
+    "power_v",        # Orbital sinusoidal; correlated with batt_soc
+    "batt_soc",       # Orbital sinusoidal; correlated with power_v
+    "temp_rf",        # Thermal cycling — sinusoidal, larger amplitude, phase-shifted
+    "temp_obc",       # Thermal cycling — sinusoidal, smaller amplitude
+    "gyro_x",         # Attitude error — Ornstein-Uhlenbeck, fast mean-reverting
+    "gyro_y",         # Attitude error — Ornstein-Uhlenbeck, fast mean-reverting
+    "reaction_wheel", # Angular-momentum bias — Ornstein-Uhlenbeck, slow mean-reverting
+]
 
 ANOMALY_TYPES = ("spike", "step", "ramp", "correlation_break")
 
@@ -16,7 +24,7 @@ class TelemetryGeneratorConfig:
     n_channels: int = 7
     n_timesteps: int = 1000
     sampling_hz: float = 1.0
-    noise_std: float = 0.1
+    noise_std: float = 0.05       # Base Gaussian noise (fraction of channel amplitude)
     orbital_period_steps: int = 200
     anomaly_ratio: float = 0.05
     anomaly_types: list[str] = field(default_factory=lambda: list(ANOMALY_TYPES))
@@ -26,32 +34,93 @@ class TelemetryGeneratorConfig:
 
 
 class TelemetryGenerator:
-    """Generates synthetic multivariate satellite telemetry time series.
+    """Synthetic multivariate satellite telemetry generator.
 
-    Each channel has a sinusoidal baseline (orbital period) plus Gaussian noise.
-    Channels 0-1 are positively correlated by design (power-related).
-    Anomalies are injected as non-overlapping windows of configurable type.
+    Each channel uses a physically motivated baseline model:
+
+    - power_v / batt_soc  : orbital sinusoidal + cross-correlated Gaussian noise
+    - temp_rf / temp_obc  : sinusoidal thermal cycling with different phases / amplitudes
+    - gyro_x / gyro_y     : Ornstein-Uhlenbeck (fast mean-reverting attitude errors)
+    - reaction_wheel       : Ornstein-Uhlenbeck (slow mean-reverting momentum bias)
+
+    All anomaly magnitudes are expressed as multiples of each channel's own standard
+    deviation (computed analytically from the channel model), so detection difficulty
+    is consistent regardless of channel scale.
+
+    Anomaly types:
+    - spike             : one timestep, one channel shifts ±5σ
+    - step              : window, one channel shifts ±3σ
+    - ramp              : window, one channel drifts 0→4σ
+    - correlation_break : window, channel 1 decouples from channel 0 (same amplitude,
+                          zero correlation) — only detectable by multivariate methods
     """
 
     def __init__(self, config: TelemetryGeneratorConfig) -> None:
         self.config = config
+        self._channel_std: np.ndarray | None = None
         if config.seed is not None:
             set_seed(config.seed)
+
+    def _ou_process(self, n_t: int, theta: float, sigma: float) -> np.ndarray:
+        """Ornstein-Uhlenbeck: x[t] = (1-theta)*x[t-1] + sigma*N(0,1).
+
+        Stationary with mean=0 and std = sigma / sqrt(2*theta) (for small theta).
+        """
+        eps = np.random.randn(n_t).astype(np.float32) * sigma
+        x = np.zeros(n_t, dtype=np.float32)
+        for i in range(1, n_t):
+            x[i] = (1.0 - theta) * x[i - 1] + eps[i]
+        return x
 
     def _make_baseline(self) -> np.ndarray:
         n_t = self.config.n_timesteps
         n_c = self.config.n_channels
+        noise = self.config.noise_std
+        omega = 2.0 * np.pi / self.config.orbital_period_steps
         t = np.arange(n_t, dtype=np.float32)
-        omega = 2 * np.pi / self.config.orbital_period_steps
-        phases = np.linspace(0, np.pi, n_c, dtype=np.float32)
-        amplitudes = np.ones(n_c, dtype=np.float32)
-        amplitudes[2] = 2.0
-        signal = np.outer(np.sin(omega * t), amplitudes) + phases[np.newaxis, :]
-        noise = np.random.randn(n_t, n_c).astype(np.float32) * self.config.noise_std
-        corr = np.random.randn(n_t).astype(np.float32) * self.config.noise_std
-        noise[:, 0] += corr
-        noise[:, 1] += corr * 0.8
-        return signal + noise
+
+        data = np.zeros((n_t, n_c), dtype=np.float32)
+        channel_std = np.ones(n_c, dtype=np.float32)
+
+        # --- Channels 0-1: power_v, batt_soc —————————————————————————————
+        # Same orbital sine + a shared noise term (induces correlation).
+        amp01 = 1.0
+        sine01 = amp01 * np.sin(omega * t).astype(np.float32)
+        corr = np.random.randn(n_t).astype(np.float32) * noise
+        data[:, 0] = sine01 + corr + np.random.randn(n_t).astype(np.float32) * noise
+        data[:, 1] = sine01 + corr * 0.9 + np.random.randn(n_t).astype(np.float32) * noise
+        # Analytical std: sqrt(amp^2/2 + var_corr + var_indep)
+        std01 = float(np.sqrt(amp01 ** 2 / 2 + 2 * noise ** 2))
+        channel_std[0] = channel_std[1] = std01
+
+        # --- Channels 2-3: temp_rf, temp_obc ——————————————————————————————
+        if n_c > 2:
+            amp2 = 2.0
+            data[:, 2] = amp2 * np.sin(omega * t + 0.3).astype(np.float32) \
+                         + np.random.randn(n_t).astype(np.float32) * noise
+            channel_std[2] = float(np.sqrt(amp2 ** 2 / 2 + noise ** 2))
+        if n_c > 3:
+            amp3 = 1.0
+            data[:, 3] = amp3 * np.sin(omega * t + 0.7).astype(np.float32) \
+                         + np.random.randn(n_t).astype(np.float32) * noise
+            channel_std[3] = float(np.sqrt(amp3 ** 2 / 2 + noise ** 2))
+
+        # --- Channels 4-5: gyro_x, gyro_y (fast OU) ———————————————————————
+        ou_theta_fast = 0.15
+        ou_sigma_fast = noise * 2
+        for ch in range(4, min(6, n_c)):
+            data[:, ch] = self._ou_process(n_t, ou_theta_fast, ou_sigma_fast)
+            channel_std[ch] = float(ou_sigma_fast / np.sqrt(2 * ou_theta_fast))
+
+        # --- Channel 6: reaction_wheel (slow OU) ——————————————————————————
+        if n_c > 6:
+            ou_theta_slow = 0.005
+            ou_sigma_slow = noise
+            data[:, 6] = self._ou_process(n_t, ou_theta_slow, ou_sigma_slow)
+            channel_std[6] = float(ou_sigma_slow / np.sqrt(2 * ou_theta_slow))
+
+        self._channel_std = channel_std[:n_c]
+        return data[:, :n_c]
 
     def _find_free_window(
         self,
@@ -67,13 +136,12 @@ class TelemetryGenerator:
         return None
 
     def _inject_spike(self, data: np.ndarray, labels: np.ndarray) -> None:
-        duration = 1
-        start = self._find_free_window(labels, duration)
+        start = self._find_free_window(labels, 1)
         if start is None:
             return
         ch = random.randint(0, self.config.n_channels - 1)
         sign = 1 if random.random() > 0.5 else -1
-        data[start, ch] += sign * 5.0 * self.config.noise_std * 10
+        data[start, ch] += sign * 5.0 * float(self._channel_std[ch])
         labels[start] = 1
 
     def _inject_step(self, data: np.ndarray, labels: np.ndarray) -> None:
@@ -84,7 +152,8 @@ class TelemetryGenerator:
         if start is None:
             return
         ch = random.randint(0, self.config.n_channels - 1)
-        shift = (1 if random.random() > 0.5 else -1) * self.config.noise_std * 8
+        sign = 1 if random.random() > 0.5 else -1
+        shift = sign * 3.0 * float(self._channel_std[ch])
         data[start : start + duration, ch] += shift
         labels[start : start + duration] = 1
 
@@ -96,7 +165,8 @@ class TelemetryGenerator:
         if start is None:
             return
         ch = random.randint(0, self.config.n_channels - 1)
-        ramp = np.linspace(0, self.config.noise_std * 10, duration, dtype=np.float32)
+        final_mag = 4.0 * float(self._channel_std[ch])
+        ramp = np.linspace(0, final_mag, duration, dtype=np.float32)
         data[start : start + duration, ch] += ramp
         labels[start : start + duration] = 1
 
@@ -107,10 +177,12 @@ class TelemetryGenerator:
         start = self._find_free_window(labels, duration)
         if start is None:
             return
-        # channels 0 and 1 are normally correlated; break the correlation by
-        # replacing channel 1 with independent noise
+        # Channels 0 and 1 are normally correlated via a shared noise term.
+        # Break the correlation by replacing channel 1 with independent noise of the
+        # same amplitude — the z-score won't change much, but Mahalanobis will flag it.
+        std1 = float(self._channel_std[1])
         data[start : start + duration, 1] = (
-            np.random.randn(duration).astype(np.float32) * self.config.noise_std * 3
+            np.random.randn(duration).astype(np.float32) * std1
         )
         labels[start : start + duration] = 1
 
