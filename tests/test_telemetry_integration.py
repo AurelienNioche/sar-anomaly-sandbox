@@ -37,10 +37,9 @@ def _generate_with_types(types: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
     return TelemetryGenerator(cfg).generate()
 
 
-def _split(telemetry: torch.Tensor, labels: torch.Tensor):
+def _train_split(telemetry: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     normal = telemetry[labels == 0]
-    n_train = max(1, len(normal) // 2)
-    return normal[:n_train], telemetry, labels
+    return normal[:max(1, len(normal) // 2)]
 
 
 def test_zscore_pipeline_auc() -> None:
@@ -52,9 +51,9 @@ def test_zscore_pipeline_auc() -> None:
     """
     telemetry, labels = _generate_with_types(["spike", "step", "ramp"])
     assert labels.sum().item() > 0
-    train, data, labels = _split(telemetry, labels)
+    train = _train_split(telemetry, labels)
     det = PerChannelZScore(window=20).fit(train)
-    scores = det.score(data).numpy()
+    scores = det.score(telemetry).numpy()
     auc = roc_auc_score(labels.numpy(), scores)
     assert auc > 0.75, f"PerChannelZScore AUC={auc:.3f} on spike/step/ramp data"
 
@@ -63,9 +62,9 @@ def test_mahalanobis_pipeline_auc() -> None:
     """MahalanobisDetector on all anomaly types including correlation_break."""
     telemetry, labels = _generate()
     assert labels.sum().item() > 0
-    train, data, labels = _split(telemetry, labels)
+    train = _train_split(telemetry, labels)
     det = MahalanobisDetector(window=20).fit(train)
-    scores = det.score(data).numpy()
+    scores = det.score(telemetry).numpy()
     auc = roc_auc_score(labels.numpy(), scores)
     assert auc > 0.7, f"MahalanobisDetector AUC={auc:.3f} too low"
 
@@ -95,11 +94,11 @@ def test_cusum_pipeline_auc() -> None:
 
 def test_ml_pipeline_auc() -> None:
     telemetry, labels = _generate()
-    train, data, labels = _split(telemetry, labels)
+    train = _train_split(telemetry, labels)
 
     for det in [IsolationForestDetector(window=20), OneClassSVMDetector(window=20)]:
         det.fit(train)
-        scores = det.score(data).numpy()
+        scores = det.score(telemetry).numpy()
         auc = roc_auc_score(labels.numpy(), scores)
         assert auc > 0.65, f"{type(det).__name__} AUC={auc:.3f} too low in integration test"
 

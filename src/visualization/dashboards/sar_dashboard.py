@@ -9,10 +9,11 @@ from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_sco
 from src.data.generators import SpeckleSARGenerator
 from src.data.generators.speckle import SpeckleSARGeneratorConfig
 from src.models.baselines import RXDetector
+from src.utils.metrics import best_f1_threshold as _best_f1_threshold
 from src.visualization.dashboards.data_io import (
     list_runs,
+    load_tensor,
     load_tensors_from_dir,
-    load_tensors_from_upload,
 )
 from src.visualization.dashboards.data_io import (
     save_run as _save_run,
@@ -42,16 +43,21 @@ def patch_to_display(patch: np.ndarray) -> np.ndarray:
     return np.log1p(np.clip(arr, 0, None))
 
 
+def _reshape_axes(axes, rows: int, cols: int) -> np.ndarray:
+    if rows == 1 and cols == 1:
+        return np.array([[axes]])
+    if rows == 1:
+        return axes.reshape(1, -1)
+    if cols == 1:
+        return axes.reshape(-1, 1)
+    return axes
+
+
 def render_patch_grid(patches: torch.Tensor, labels: torch.Tensor, cols: int = 4) -> None:
     n = len(patches)
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
-    if rows == 1 and cols == 1:
-        axes = np.array([[axes]])
-    elif rows == 1:
-        axes = axes.reshape(1, -1)
-    elif cols == 1:
-        axes = axes.reshape(-1, 1)
+    axes = _reshape_axes(axes, rows, cols)
     for idx, ax in enumerate(axes.flat):
         if idx < n:
             arr = patch_to_display(patches[idx].numpy())
@@ -83,12 +89,7 @@ def render_patch_grid_with_outcomes(
     n = min(len(patches), max_patches)
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
-    if rows == 1 and cols == 1:
-        axes = np.array([[axes]])
-    elif rows == 1:
-        axes = axes.reshape(1, -1)
-    elif cols == 1:
-        axes = axes.reshape(-1, 1)
+    axes = _reshape_axes(axes, rows, cols)
     for idx, ax in enumerate(axes.flat):
         if idx < n:
             arr = patch_to_display(patches[idx].numpy())
@@ -104,10 +105,6 @@ def render_patch_grid_with_outcomes(
 DEFAULT_DATA_DIR = "data/synthetic"
 
 _FILENAMES = ("patches.pt", "labels.pt")
-
-
-def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | None:
-    return load_tensors_from_upload(uploaded, _FILENAMES)  # type: ignore[return-value]
 
 
 def load_patches_labels_from_dir(
@@ -135,10 +132,7 @@ def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None
         help="Runs are listed newest first.",
     )
     run_path = runs[options.index(selected)]
-    tensors = tuple(
-        torch.load(run_path / f, map_location="cpu", weights_only=True)
-        for f in _FILENAMES
-    )
+    tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
     st.caption(f"Loaded `{run_path}`")
     return tensors[0], tensors[1]
 
@@ -260,20 +254,6 @@ def tab_visualize() -> None:
         st.subheader("Grid preview")
         preview_n = min(16, n)
         render_patch_grid(patches[:preview_n], labels[:preview_n], cols=4)
-
-
-def _best_f1_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    """Return the threshold on the ROC curve that maximises F1."""
-    _, _, thresholds = roc_curve(y_true, y_score)
-    best_thresh = float(thresholds[0])
-    best_f1 = 0.0
-    for t in thresholds:
-        preds = (y_score >= t).astype(int)
-        f1 = f1_score(y_true, preds, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_thresh = float(t)
-    return best_thresh
 
 
 def tab_detector() -> None:

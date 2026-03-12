@@ -45,24 +45,20 @@ class SpeckleSARGenerator:
         patch[i : i + s, j : j + s] = self.config.anomaly_intensity
         return patch
 
-    def __iter__(self) -> "SpeckleSARGenerator":
-        return self
-
-    def __next__(self) -> tuple[torch.Tensor, int]:
+    def _generate_patch(self) -> tuple[torch.Tensor, int]:
         patch = self._generate_background()
         if random.random() < self.config.anomaly_ratio:
             patch = self._add_bright_target(patch)
             label = 1
         else:
             label = 0
-        tensor = torch.from_numpy(patch).unsqueeze(0)
-        return tensor, label
+        return torch.from_numpy(patch).unsqueeze(0), label
 
     def generate(self, n_samples: int) -> tuple[torch.Tensor, torch.Tensor]:
         patches: list[torch.Tensor] = []
         labels: list[int] = []
         for _ in range(n_samples):
-            patch, label = next(self)
+            patch, label = self._generate_patch()
             patches.append(patch)
             labels.append(label)
         return torch.stack(patches), torch.tensor(labels, dtype=torch.long)

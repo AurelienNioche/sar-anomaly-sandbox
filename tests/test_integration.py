@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 from sklearn.metrics import roc_auc_score
 
 from src.data.generators import SpeckleSARGenerator
@@ -59,7 +60,6 @@ def test_full_pipeline_predict_f1() -> None:
 
     best_f1 = 0.0
     for pct in range(50, 100):
-        import numpy as np
         thresh = float(np.percentile(scores, pct))
         preds = (scores > thresh).astype(int)
         f1 = f1_score(y_true, preds, zero_division=0)

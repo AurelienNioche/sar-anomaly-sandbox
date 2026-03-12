@@ -7,7 +7,6 @@ import torch
 from sklearn.metrics import f1_score, precision_score, recall_score
 
 from src.models.baselines import RXDetector
-from src.visualization.dashboards.data_io import _find_latest_run
 from src.visualization.dashboards.sar_dashboard import (
     LABEL_NAMES,
     load_patches_labels_from_dir,
@@ -156,21 +155,24 @@ def test_save_run_multiple_runs_distinct_dirs() -> None:
         assert len(list(Path(tmp).iterdir())) == 2
 
 
-def test_find_latest_run_picks_newest() -> None:
+def test_auto_latest_picks_newest() -> None:
+    """load_patches_labels_from_dir selects the most recently modified run."""
     patches = torch.ones(3, 1, 8, 8)
     labels = torch.zeros(3, dtype=torch.long)
     with tempfile.TemporaryDirectory() as tmp:
         d1 = save_run(patches, labels, base_dir=tmp)
         time.sleep(1.1)
         d2 = save_run(patches, labels, base_dir=tmp)
-        latest = _find_latest_run(Path(tmp))
-    assert latest == d2
-    assert latest != d1
+        result = load_patches_labels_from_dir(tmp)
+    assert result is not None
+    _, _, resolved = result
+    assert resolved == d2
+    assert resolved != d1
 
 
-def test_find_latest_run_empty_dir() -> None:
+def test_auto_latest_empty_dir() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        assert _find_latest_run(Path(tmp)) is None
+        assert load_patches_labels_from_dir(tmp) is None
 
 
 def test_detector_tab_score_shape() -> None:

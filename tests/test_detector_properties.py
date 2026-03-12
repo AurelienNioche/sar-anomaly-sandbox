@@ -11,7 +11,7 @@ from sklearn.metrics import precision_score, recall_score, roc_auc_score, roc_cu
 from src.data.generators.telemetry import TelemetryGenerator, TelemetryGeneratorConfig
 from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZScore
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
-from src.models.classical.telemetry_ml import _make_windows
+from src.models.classical.telemetry_ml import _make_windows as _make_windows_raw
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -117,6 +117,16 @@ def test_zscore_correlation_break_not_detectable():
 # MahalanobisDetector — cross-channel detection
 # ---------------------------------------------------------------------------
 
+def test_mahalanobis_auc_floor():
+    """MahalanobisDetector must achieve AUC ≥ 0.85 on default mixed data.
+    Observed: ~0.96.  This absolute floor ensures the existing relative test
+    (must beat ZScore by 0.10) cannot pass if both detectors have regressed."""
+    train, data, labels = _default_data()
+    det = MahalanobisDetector(window=20).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc >= 0.85, f"MahalanobisDetector AUC={auc:.3f} < 0.85 floor"
+
+
 def test_mahalanobis_detects_correlation_break():
     """Mahalanobis must achieve AUC > 0.7 on correlation_break-only data,
     where z-score fails."""
@@ -184,6 +194,16 @@ def test_cusum_good_on_stationary_tail_step():
 # IsolationForestDetector — StandardScaler
 # ---------------------------------------------------------------------------
 
+def test_isolation_forest_auc_floor():
+    """IsolationForest must achieve AUC ≥ 0.60 on default mixed data.
+    Observed: ~0.73.  The floor guards against regressions in the windowing
+    or scaling pipeline without being so tight that noise causes flakiness."""
+    train, data, labels = _default_data()
+    det = IsolationForestDetector(window=10).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc >= 0.60, f"IsolationForest AUC={auc:.3f} < 0.60 floor"
+
+
 def test_isolation_forest_has_scaler_after_fit():
     """After fit, the StandardScaler must have been applied (mean_ and scale_
     attributes must exist and have the correct feature dimension)."""
@@ -201,7 +221,7 @@ def test_isolation_forest_scaler_normalises_training_windows():
     per feature (this is the whole point of adding the StandardScaler)."""
     train, _, _ = _default_data()
     det = IsolationForestDetector(window=10).fit(train)
-    windows, _ = _make_windows(train.float().numpy(), 10)
+    windows = _make_windows_raw(train.float().numpy(), 10)
     scaled = det.scaler.transform(windows)
     assert abs(scaled.mean()) < 0.1, f"Scaled windows mean={scaled.mean():.3f} ≠ 0"
     assert abs(scaled.std() - 1.0) < 0.1, f"Scaled windows std={scaled.std():.3f} ≠ 1"
@@ -210,6 +230,16 @@ def test_isolation_forest_scaler_normalises_training_windows():
 # ---------------------------------------------------------------------------
 # OneClassSVMDetector — precision
 # ---------------------------------------------------------------------------
+
+def test_ocsvm_auc_floor():
+    """OneClassSVM must achieve AUC ≥ 0.65 on default mixed data.
+    Observed: ~0.79.  The floor catches regressions in the scaler or window
+    pipeline while giving a generous margin for seed-to-seed variance."""
+    train, data, labels = _default_data()
+    det = OneClassSVMDetector(window=10).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc >= 0.65, f"OneClassSVM AUC={auc:.3f} < 0.65 floor"
+
 
 def test_ocsvm_precision_floor():
     """OCSVM must achieve precision ≥ 0.6 at best-F1 threshold on default data."""

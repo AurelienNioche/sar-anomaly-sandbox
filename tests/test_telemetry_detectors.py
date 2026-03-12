@@ -88,10 +88,8 @@ def test_cusum_detects_drift() -> None:
 
 
 def test_fit_before_score_raises() -> None:
+    import pytest
     data = torch.zeros(50, 3)
     for det in [PerChannelZScore(), MahalanobisDetector(), CUSUMDetector()]:
-        try:
+        with pytest.raises(RuntimeError):
             det.score(data)
-            assert False, f"{type(det).__name__} should raise before fit"
-        except RuntimeError:
-            pass

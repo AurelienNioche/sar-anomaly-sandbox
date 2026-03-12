@@ -7,6 +7,11 @@ from pathlib import Path
 import torch
 
 
+def load_tensor(path: Path) -> torch.Tensor:
+    """Load a single tensor from *path* with safe defaults."""
+    return torch.load(path, map_location="cpu", weights_only=True)
+
+
 def list_runs(base_dir: str, filenames: tuple[str, ...]) -> list[Path]:
     """Return all valid run directories inside *base_dir*, newest first.
 
@@ -59,10 +64,7 @@ def load_tensors_from_dir(
         resolved = p
     else:
         return None
-    tensors = tuple(
-        torch.load(resolved / f, map_location="cpu", weights_only=True)
-        for f in filenames
-    )
+    tensors = tuple(load_tensor(resolved / f) for f in filenames)
     return tensors, resolved
 
 

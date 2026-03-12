@@ -135,16 +135,25 @@ class TelemetryGenerator:
                 return start
         return None
 
+    def _require_channel_std(self) -> np.ndarray:
+        if self._channel_std is None:
+            raise RuntimeError(
+                "_channel_std is not initialised — call generate() before using injectors."
+            )
+        return self._channel_std
+
     def _inject_spike(self, data: np.ndarray, labels: np.ndarray) -> None:
+        std = self._require_channel_std()
         start = self._find_free_window(labels, 1)
         if start is None:
             return
         ch = random.randint(0, self.config.n_channels - 1)
         sign = 1 if random.random() > 0.5 else -1
-        data[start, ch] += sign * 8.0 * float(self._channel_std[ch])
+        data[start, ch] += sign * 8.0 * float(std[ch])
         labels[start] = 1
 
     def _inject_step(self, data: np.ndarray, labels: np.ndarray) -> None:
+        std = self._require_channel_std()
         duration = random.randint(
             self.config.anomaly_min_duration, self.config.anomaly_max_duration
         )
@@ -153,11 +162,12 @@ class TelemetryGenerator:
             return
         ch = random.randint(0, self.config.n_channels - 1)
         sign = 1 if random.random() > 0.5 else -1
-        shift = sign * 6.0 * float(self._channel_std[ch])
+        shift = sign * 6.0 * float(std[ch])
         data[start : start + duration, ch] += shift
         labels[start : start + duration] = 1
 
     def _inject_ramp(self, data: np.ndarray, labels: np.ndarray) -> None:
+        std = self._require_channel_std()
         duration = random.randint(
             self.config.anomaly_min_duration, self.config.anomaly_max_duration
         )
@@ -165,12 +175,13 @@ class TelemetryGenerator:
         if start is None:
             return
         ch = random.randint(0, self.config.n_channels - 1)
-        final_mag = 6.0 * float(self._channel_std[ch])
+        final_mag = 6.0 * float(std[ch])
         ramp = np.linspace(0, final_mag, duration, dtype=np.float32)
         data[start : start + duration, ch] += ramp
         labels[start : start + duration] = 1
 
     def _inject_correlation_break(self, data: np.ndarray, labels: np.ndarray) -> None:
+        std = self._require_channel_std()
         duration = random.randint(
             self.config.anomaly_min_duration, self.config.anomaly_max_duration
         )
@@ -180,18 +191,10 @@ class TelemetryGenerator:
         # Channels 0 and 1 are normally correlated via a shared noise term.
         # Break the correlation by replacing channel 1 with independent noise of the
         # same amplitude — the z-score won't change much, but Mahalanobis will flag it.
-        std1 = float(self._channel_std[1])
         data[start : start + duration, 1] = (
-            np.random.randn(duration).astype(np.float32) * std1
+            np.random.randn(duration).astype(np.float32) * float(std[1])
         )
         labels[start : start + duration] = 1
-
-    _INJECTORS = {
-        "spike": _inject_spike,
-        "step": _inject_step,
-        "ramp": _inject_ramp,
-        "correlation_break": _inject_correlation_break,
-    }
 
     def generate(self) -> tuple[torch.Tensor, torch.Tensor]:
         n_t = self.config.n_timesteps
@@ -205,7 +208,7 @@ class TelemetryGenerator:
         while injected < n_anomaly_steps and itr < max_iter:
             atype = random.choice(self.config.anomaly_types)
             before = int(labels.sum())
-            self._INJECTORS[atype](self, data, labels)
+            getattr(self, f"_inject_{atype}")(data, labels)
             injected += int(labels.sum()) - before
             itr += 1
 

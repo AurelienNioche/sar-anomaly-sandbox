@@ -15,8 +15,10 @@ from src.data.generators.telemetry import (
 from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZScore
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
 from src.models.deep import LSTMAutoencoderDetector
+from src.utils.metrics import best_f1_threshold as _best_f1_threshold
 from src.visualization.dashboards.data_io import (
     list_runs,
+    load_tensor,
     save_run,
 )
 
@@ -61,10 +63,7 @@ def _load_data(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
     if run_path is None:
         return None
     st.caption(f"Loaded `{run_path}`")
-    tensors = tuple(
-        torch.load(run_path / f, map_location="cpu", weights_only=True)
-        for f in _FILENAMES
-    )
+    tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
     return tensors[0], tensors[1]
 
 
@@ -83,18 +82,21 @@ def _plot_timeseries(
     if n_rows == 1:
         axes = [axes]
     names = channel_names or [f"ch{i}" for i in range(n_c)]
+    anom_starts = np.where(np.diff(anom_mask.astype(int), prepend=0) == 1)[0]
+    anom_ends   = np.where(np.diff(anom_mask.astype(int), append=0) == -1)[0]
     for i in range(n_c):
         ax = axes[i]
         ax.plot(t, telemetry[:, i].numpy(), lw=0.8, label=names[i])
-        ax.fill_between(t, ax.get_ylim()[0], ax.get_ylim()[1],
-                        where=anom_mask, alpha=0.25, color="red", label="anomaly")
+        for s, e in zip(anom_starts, anom_ends):
+            lbl = "anomaly" if s == anom_starts[0] else ""
+            ax.axvspan(s, e, alpha=0.25, color="red", label=lbl)
         ax.set_ylabel(names[i], fontsize=8)
         ax.tick_params(labelsize=7)
     if scores is not None:
         ax = axes[n_c]
         ax.plot(t, scores.numpy(), lw=0.8, color="orange", label="score")
-        ax.fill_between(t, 0, scores.numpy().max(),
-                        where=anom_mask, alpha=0.25, color="red")
+        for s, e in zip(anom_starts, anom_ends):
+            ax.axvspan(s, e, alpha=0.25, color="red")
         ax.set_ylabel("score", fontsize=8)
         ax.tick_params(labelsize=7)
     axes[0].set_title(title)
@@ -104,16 +106,67 @@ def _plot_timeseries(
     plt.close()
 
 
-def _best_f1_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    _, _, thresholds = roc_curve(y_true, y_score)
-    best_thresh, best_f1 = float(thresholds[0]), 0.0
-    for t in thresholds:
-        preds = (y_score >= t).astype(int)
-        f1 = f1_score(y_true, preds, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_thresh = float(t)
-    return best_thresh
+def _split_normal(
+    telemetry: torch.Tensor,
+    labels: torch.Tensor,
+    frac: float,
+) -> torch.Tensor:
+    """Return the training-normal slice: first *frac* of anomaly-free timesteps."""
+    normal = telemetry[labels == 0]
+    return normal[:max(1, int(len(normal) * frac))]
+
+
+def _detector_tab(
+    tab_key: str,
+    header: str,
+    description: str,
+    detector_factories: dict,
+    window_range: tuple[int, int, int],
+    default_index: int = 0,
+) -> None:
+    """Generic skeleton shared by the Statistical and ML detector tabs.
+
+    *detector_factories* maps display name → callable(window) → unfitted detector.
+    """
+    st.header(header)
+    st.markdown(description)
+
+    result = _load_data(tab_key)
+    if result is None:
+        st.info("Select a data source above.")
+        return
+    telemetry, labels = result
+
+    train_frac = st.slider(
+        "Training fraction (normal)", 0.1, 0.9, 0.5, 0.05, key=f"{tab_key}_frac"
+    )
+    train = _split_normal(telemetry, labels, train_frac)
+    detector_name = st.selectbox(
+        "Detector",
+        list(detector_factories),
+        index=default_index,
+        key=f"{tab_key}_det",
+    )
+    w_min, w_max, w_default = window_range
+    window = st.slider("Window size", w_min, w_max, w_default, key=f"{tab_key}_window")
+
+    if st.button("Run", key=f"{tab_key}_run"):
+        det = detector_factories[detector_name](window).fit(train)
+        scores = det.score(telemetry)
+        st.session_state[f"{tab_key}_scores"] = scores
+        st.session_state[f"{tab_key}_labels"] = labels
+        st.session_state[f"{tab_key}_telemetry"] = telemetry
+        st.session_state.pop(f"{tab_key}_threshold", None)
+
+    if f"{tab_key}_scores" not in st.session_state:
+        st.info("Click **Run** to fit and score.")
+        return
+    _detector_results_section(
+        tab_key,
+        st.session_state[f"{tab_key}_scores"],
+        st.session_state[f"{tab_key}_labels"],
+        st.session_state[f"{tab_key}_telemetry"],
+    )
 
 
 def _detector_results_section(
@@ -282,10 +335,7 @@ def tab_visualize() -> None:
     if run_path is not None:
         resolved = str(run_path)
         st.caption(f"Loaded `{resolved}`")
-        tensors = tuple(
-            torch.load(run_path / f, map_location="cpu", weights_only=True)
-            for f in _FILENAMES
-        )
+        tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
         telemetry, labels = tensors[0], tensors[1]
         if st.session_state.get("tel_viz_last_synced") != resolved:
             for suffix in ("stat", "ml", "deep", "cmp"):
@@ -326,93 +376,40 @@ def tab_visualize() -> None:
     st.table(rows)
 
 
+_STAT_DETECTORS = {
+    "PerChannelZScore": lambda w: PerChannelZScore(window=w),
+    "Mahalanobis":      lambda w: MahalanobisDetector(window=w),
+    "CUSUM":            lambda _w: CUSUMDetector(),
+}
+
+_ML_DETECTORS = {
+    "Isolation Forest": lambda w: IsolationForestDetector(window=w),
+    "One-Class SVM":    lambda w: OneClassSVMDetector(window=w),
+}
+
+
 def tab_statistical() -> None:
-    st.header("Statistical Detectors")
-    st.markdown(
-        "Three classical baselines: per-channel z-score, multivariate Mahalanobis distance, "
-        "and CUSUM drift detection."
-    )
-
-    result = _load_data("tel_stat")
-    if result is None:
-        st.info("Select a data source above.")
-        return
-    telemetry, labels = result
-
-    train_frac = st.slider("Training fraction (normal)", 0.1, 0.9, 0.5, 0.05, key="tel_stat_frac")
-    normal = telemetry[labels == 0]
-    n_train = max(1, int(len(normal) * train_frac))
-    train = normal[:n_train]
-    detector_name = st.selectbox(
-        "Detector",
-        ["PerChannelZScore", "Mahalanobis", "CUSUM"],
-        index=1,
-        key="tel_stat_det",
-    )
-    window = st.slider("Window size", 5, 100, 20, key="tel_stat_window")
-
-    if st.button("Run", key="tel_stat_run"):
-        if detector_name == "PerChannelZScore":
-            det = PerChannelZScore(window=window).fit(train)
-        elif detector_name == "Mahalanobis":
-            det = MahalanobisDetector(window=window).fit(train)
-        else:
-            det = CUSUMDetector().fit(train)
-        scores = det.score(telemetry)
-        st.session_state["tel_stat_scores"] = scores
-        st.session_state["tel_stat_labels"] = labels
-        st.session_state["tel_stat_telemetry"] = telemetry
-        st.session_state.pop("tel_stat_threshold", None)
-
-    if "tel_stat_scores" not in st.session_state:
-        st.info("Click **Run** to fit and score.")
-        return
-    _detector_results_section(
-        "tel_stat",
-        st.session_state["tel_stat_scores"],
-        st.session_state["tel_stat_labels"],
-        st.session_state["tel_stat_telemetry"],
+    _detector_tab(
+        tab_key="tel_stat",
+        header="Statistical Detectors",
+        description=(
+            "Three classical baselines: per-channel z-score, multivariate Mahalanobis "
+            "distance, and CUSUM drift detection."
+        ),
+        detector_factories=_STAT_DETECTORS,
+        window_range=(5, 100, 20),
+        default_index=1,
     )
 
 
 def tab_ml() -> None:
-    st.header("ML Detectors")
-    st.markdown("Isolation Forest and One-Class SVM operating on sliding windows.")
-
-    result = _load_data("tel_ml")
-    if result is None:
-        st.info("Select a data source above.")
-        return
-    telemetry, labels = result
-
-    train_frac = st.slider("Training fraction (normal)", 0.1, 0.9, 0.5, 0.05, key="tel_ml_frac")
-    normal = telemetry[labels == 0]
-    n_train = max(1, int(len(normal) * train_frac))
-    train = normal[:n_train]
-    detector_name = st.selectbox(
-        "Detector", ["Isolation Forest", "One-Class SVM"], index=1, key="tel_ml_det"
-    )
-    window = st.slider("Window size", 5, 50, 10, key="tel_ml_window")
-
-    if st.button("Run", key="tel_ml_run"):
-        if detector_name == "Isolation Forest":
-            det = IsolationForestDetector(window=window).fit(train)
-        else:
-            det = OneClassSVMDetector(window=window).fit(train)
-        scores = det.score(telemetry)
-        st.session_state["tel_ml_scores"] = scores
-        st.session_state["tel_ml_labels"] = labels
-        st.session_state["tel_ml_telemetry"] = telemetry
-        st.session_state.pop("tel_ml_threshold", None)
-
-    if "tel_ml_scores" not in st.session_state:
-        st.info("Click **Run** to fit and score.")
-        return
-    _detector_results_section(
-        "tel_ml",
-        st.session_state["tel_ml_scores"],
-        st.session_state["tel_ml_labels"],
-        st.session_state["tel_ml_telemetry"],
+    _detector_tab(
+        tab_key="tel_ml",
+        header="ML Detectors",
+        description="Isolation Forest and One-Class SVM operating on sliding windows.",
+        detector_factories=_ML_DETECTORS,
+        window_range=(5, 50, 10),
+        default_index=1,
     )
 
 
@@ -430,9 +427,7 @@ def tab_deep() -> None:
     telemetry, labels = result
 
     train_frac = st.slider("Training fraction (normal)", 0.1, 0.9, 0.5, 0.05, key="tel_deep_frac")
-    normal = telemetry[labels == 0]
-    n_train = max(1, int(len(normal) * train_frac))
-    train = normal[:n_train]
+    train = _split_normal(telemetry, labels, train_frac)
 
     col1, col2, col3 = st.columns(3)
     window = col1.slider("Window", 10, 100, 30, key="tel_deep_window")
@@ -497,9 +492,7 @@ def tab_comparison() -> None:
         st.info("Click **Run All Detectors** to compare.")
         return
 
-    normal = telemetry[labels == 0]
-    n_train = max(1, len(normal) // 2)
-    train = normal[:n_train]
+    train = _split_normal(telemetry, labels, 0.5)
 
     detectors: dict = {
         "Z-Score": PerChannelZScore(window=20),
