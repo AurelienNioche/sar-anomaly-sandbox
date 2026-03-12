@@ -23,16 +23,11 @@ classifiers = [
 ]
 dependencies = [
     "torch>=2.0.0",
-    "torchvision>=0.15.0",
     "scipy>=1.10.0",
     "numpy>=1.24.0",
     "scikit-learn>=1.3.0",
     "matplotlib>=3.7.0",
-    "plotly>=5.15.0",
     "pyyaml>=6.0",
-    "omegaconf>=2.3.0",
-    "tqdm>=4.65.0",
-    "rich>=13.0.0",
     "streamlit>=1.28.0",
     "watchdog>=6.0.0",
 ]
@@ -47,8 +42,6 @@ dev = [
 ]
 
 [project.scripts]
-run_train = "src.experiments.run_train:main"
-run_eval = "src.experiments.run_eval:main"
 run_generate = "src.experiments.run_generate:main"
 
 [tool.hatch.build.targets.wheel]
