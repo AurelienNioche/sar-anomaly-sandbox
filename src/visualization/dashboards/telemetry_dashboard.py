@@ -160,17 +160,32 @@ def _detector_results_section(
         st.pyplot(fig)
         plt.close()
 
-    default_thresh = st.session_state.get(
-        f"{tab_key}_threshold", _best_f1_threshold(y_true, y_score)
-    )
-    threshold = st.slider(
-        "Decision threshold",
-        min_value=float(y_score.min()),
-        max_value=float(y_score.max()),
-        value=float(np.clip(default_thresh, y_score.min(), y_score.max())),
-        step=(float(y_score.max()) - float(y_score.min())) / 100,
-        key=f"{tab_key}_threshold",
-    )
+    best_thresh = float(np.clip(
+        _best_f1_threshold(y_true, y_score), y_score.min(), y_score.max()
+    ))
+    thresh_key = f"{tab_key}_threshold"
+    if thresh_key not in st.session_state:
+        st.session_state[thresh_key] = best_thresh
+
+    def _reset_threshold(key=thresh_key, val=best_thresh):
+        st.session_state[key] = val
+
+    col_slider, col_btn = st.columns([5, 1])
+    with col_btn:
+        st.button(
+            "Reset to best-F1",
+            on_click=_reset_threshold,
+            key=f"{tab_key}_thresh_reset",
+            help=f"Reset threshold to the F1-optimal value ({best_thresh:.4f})",
+        )
+    with col_slider:
+        threshold = st.slider(
+            "Decision threshold",
+            min_value=float(y_score.min()),
+            max_value=float(y_score.max()),
+            step=(float(y_score.max()) - float(y_score.min())) / 100,
+            key=thresh_key,
+        )
     preds = (y_score >= threshold).astype(int)
     c1, c2, c3 = st.columns(3)
     c1.metric("Precision", f"{precision_score(y_true, preds, zero_division=0):.3f}")
