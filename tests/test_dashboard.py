@@ -62,7 +62,8 @@ def _make_patches(n: int = 100) -> tuple[torch.Tensor, torch.Tensor]:
     return SpeckleSARGenerator(config).generate(n)
 
 
-def test_load_patches_labels_from_dir_valid() -> None:
+def test_load_patches_labels_from_dir_flat_files() -> None:
+    """Flat patches.pt/labels.pt are used when no timestamped sub-folder exists."""
     patches = torch.ones(10, 1, 16, 16)
     labels = torch.zeros(10, dtype=torch.long)
     with tempfile.TemporaryDirectory() as tmp:
@@ -76,8 +77,27 @@ def test_load_patches_labels_from_dir_valid() -> None:
     assert resolved == Path(tmp)
 
 
+def test_load_patches_labels_from_dir_prefers_subdir_over_flat() -> None:
+    """Timestamped sub-folder takes priority even if flat files exist alongside it."""
+    flat_patches = torch.zeros(10, 1, 16, 16)
+    run_patches = torch.ones(5, 1, 8, 8)
+    labels = torch.zeros(5, dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        torch.save(flat_patches, Path(tmp) / "patches.pt")
+        torch.save(labels, Path(tmp) / "labels.pt")
+        run_dir = Path(tmp) / "2026-03-12_10-00-00"
+        run_dir.mkdir()
+        torch.save(run_patches, run_dir / "patches.pt")
+        torch.save(labels, run_dir / "labels.pt")
+        result = load_patches_labels_from_dir(tmp)
+    assert result is not None
+    patches_out, _, resolved = result
+    assert resolved == run_dir
+    assert patches_out.shape == (5, 1, 8, 8)
+
+
 def test_load_patches_labels_from_dir_auto_latest() -> None:
-    """When patches.pt is in a subdirectory, the latest run is auto-selected."""
+    """When patches.pt is only in a sub-folder, the latest run is auto-selected."""
     patches = torch.ones(5, 1, 8, 8)
     labels = torch.zeros(5, dtype=torch.long)
     with tempfile.TemporaryDirectory() as tmp:

@@ -136,25 +136,24 @@ def load_patches_labels_from_dir(
 ) -> tuple[torch.Tensor, torch.Tensor, Path] | None:
     """Load patches and labels from *dir_path*.
 
-    If patches.pt / labels.pt are not directly in that directory, falls back
-    to the most recently modified subdirectory that contains them (i.e. the
-    latest timestamped run).  Returns (patches, labels, resolved_path) or None.
+    Timestamped run sub-folders take priority over flat files: if any valid
+    sub-folder exists the most recently modified one is used, regardless of
+    whether patches.pt / labels.pt also exist directly in dir_path.
+    Returns (patches, labels, resolved_path) or None.
     """
     p = Path(dir_path)
     if not p.exists():
         return None
-    patches_path = p / "patches.pt"
-    labels_path = p / "labels.pt"
-    if not patches_path.exists() or not labels_path.exists():
-        latest = _find_latest_run(p)
-        if latest is None:
-            return None
-        patches_path = latest / "patches.pt"
-        labels_path = latest / "labels.pt"
-        p = latest
-    patches = torch.load(patches_path, map_location="cpu", weights_only=True)
-    labels = torch.load(labels_path, map_location="cpu", weights_only=True)
-    return patches, labels, p
+    latest = _find_latest_run(p)
+    if latest is not None:
+        resolved = latest
+    elif (p / "patches.pt").exists() and (p / "labels.pt").exists():
+        resolved = p
+    else:
+        return None
+    patches = torch.load(resolved / "patches.pt", map_location="cpu", weights_only=True)
+    labels = torch.load(resolved / "labels.pt", map_location="cpu", weights_only=True)
+    return patches, labels, resolved
 
 
 def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
