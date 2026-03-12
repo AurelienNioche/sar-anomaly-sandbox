@@ -235,25 +235,20 @@ def tab_generator() -> None:
             telemetry, labels = TelemetryGenerator(cfg).generate()
             st.session_state["tel_telemetry"] = telemetry
             st.session_state["tel_labels"] = labels
-            st.session_state["tel_saved_path"] = None
+            saved = save_run(
+                {"telemetry.pt": telemetry, "labels.pt": labels},
+                base_dir=DEFAULT_DATA_DIR,
+            )
+            saved_str = str(saved)
+            st.session_state["tel_saved_path"] = saved_str
+            for suffix in ("stat", "ml", "deep", "cmp"):
+                st.session_state[f"tel_{suffix}_dir"] = saved_str
 
-        if "tel_telemetry" in st.session_state:
-            if st.button("Save to disk", key="tel_save"):
-                saved = save_run(
-                    {"telemetry.pt": st.session_state["tel_telemetry"],
-                     "labels.pt": st.session_state["tel_labels"]},
-                    base_dir=DEFAULT_DATA_DIR,
-                )
-                saved_str = str(saved)
-                st.session_state["tel_saved_path"] = saved_str
-                for suffix in ("stat", "ml", "deep", "cmp"):
-                    st.session_state[f"tel_{suffix}_dir"] = saved_str
-
-            if st.session_state.get("tel_saved_path"):
-                st.success(
-                    f"Saved to `{st.session_state['tel_saved_path']}` — "
-                    "all detector tabs updated automatically."
-                )
+        if st.session_state.get("tel_saved_path"):
+            st.success(
+                f"Saved to `{st.session_state['tel_saved_path']}` — "
+                "all detector tabs updated automatically."
+            )
 
     with col2:
         if "tel_telemetry" in st.session_state:

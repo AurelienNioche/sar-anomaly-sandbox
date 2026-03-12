@@ -73,17 +73,19 @@ def test_no_stale_data_in_telemetry_dir() -> None:
     Saved runs are user-local artefacts; committing them silently overrides
     everyone else's dashboard with old (possibly wrong) data on first load.
     """
-    base = Path(DEFAULT_DATA_DIR)
-    if not base.exists():
-        return
-    stale = [
-        d for d in base.iterdir()
-        if d.is_dir() and (d / "telemetry.pt").exists()
+    import subprocess
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", DEFAULT_DATA_DIR],
+        capture_output=True, text=True,
+        cwd=Path(DEFAULT_DATA_DIR).parent.parent,
+    )
+    tracked = [
+        line for line in result.stdout.splitlines()
+        if line.endswith(".pt")
     ]
-    assert stale == [], (
-        f"Committed run(s) found in {DEFAULT_DATA_DIR}: "
-        + ", ".join(str(d.name) for d in stale)
-        + " — delete them; saved runs are user-local artefacts."
+    assert tracked == [], (
+        f"Telemetry run data was committed to git: {tracked} — "
+        "saved runs are user-local artefacts and must not be committed."
     )
 
 
