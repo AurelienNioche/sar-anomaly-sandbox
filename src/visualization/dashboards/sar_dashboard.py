@@ -262,12 +262,15 @@ def tab_generator() -> None:
                     st.session_state["gen_patches"],
                     st.session_state["gen_labels"],
                 )
-                st.session_state["gen_saved_path"] = str(save_dir)
+                saved_path = str(save_dir)
+                st.session_state["gen_saved_path"] = saved_path
+                st.session_state["viz_dir"] = saved_path
+                st.session_state["det_dir"] = saved_path
 
             if st.session_state.get("gen_saved_path"):
                 st.success(
                     f"Saved to `{st.session_state['gen_saved_path']}` — "
-                    "paste this path in the Visualize or Detector tab."
+                    "Visualize and Detector tabs updated automatically."
                 )
 
     with col2:
