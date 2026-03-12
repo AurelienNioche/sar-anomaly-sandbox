@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
@@ -14,8 +16,7 @@ from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZ
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
 from src.models.deep import LSTMAutoencoderDetector
 from src.visualization.dashboards.data_io import (
-    load_tensors_from_dir,
-    load_tensors_from_upload,
+    list_runs,
     save_run,
 )
 
@@ -38,43 +39,33 @@ GEN_DEFAULTS: dict = {
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _load_data(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
-    dir_path = st.text_input(
-        "Data directory",
-        value=DEFAULT_DATA_DIR,
-        key=f"{tab_key}_dir",
-        help="Path containing telemetry.pt and labels.pt (or a parent with "
-             "timestamped run sub-folders — the latest run is auto-selected).",
+def _run_selectbox(tab_key: str) -> Path | None:
+    """Render a selectbox of available runs; return the selected run Path or None."""
+    runs = list_runs(DEFAULT_DATA_DIR, _FILENAMES)
+    if not runs:
+        st.info(f"No saved runs found in `{DEFAULT_DATA_DIR}` — generate data first.")
+        return None
+    options = [r.name for r in runs]
+    selected = st.selectbox(
+        "Saved run",
+        options,
+        index=0,
+        key=f"{tab_key}_run_select",
+        help="Runs are listed newest first.",
     )
-    result_tensors = None
-    if dir_path:
-        raw = load_tensors_from_dir(dir_path, _FILENAMES)
-        if raw is not None:
-            (telemetry, labels), resolved = raw
-            result_tensors = (telemetry, labels)
-            resolved_str = str(resolved)
-            msg = (
-                f"Auto-selected latest run: `{resolved_str}`"
-                if resolved_str != dir_path
-                else f"Loaded from `{resolved_str}`"
-            )
-            st.success(msg)
-        else:
-            st.warning(f"`{dir_path}` not found or contains no valid run data.")
+    return runs[options.index(selected)]
 
-    uploaded = st.file_uploader(
-        "Or drag-and-drop a folder to override",
-        accept_multiple_files="directory",
-        type=None,
-        key=f"{tab_key}_upload",
+
+def _load_data(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
+    run_path = _run_selectbox(tab_key)
+    if run_path is None:
+        return None
+    st.caption(f"Loaded `{run_path}`")
+    tensors = tuple(
+        torch.load(run_path / f, map_location="cpu", weights_only=True)
+        for f in _FILENAMES
     )
-    if uploaded:
-        tensors = load_tensors_from_upload(uploaded, _FILENAMES)
-        if tensors is None:
-            st.error("Expected telemetry.pt and labels.pt in the selected folder.")
-        else:
-            result_tensors = (tensors[0], tensors[1])
-    return result_tensors
+    return tensors[0], tensors[1]
 
 
 def _plot_timeseries(
@@ -284,47 +275,22 @@ def tab_visualize() -> None:
         "The run open here automatically becomes the data source for all detector tabs."
     )
 
-    dir_path = st.text_input(
-        "Data directory",
-        value=DEFAULT_DATA_DIR,
-        key="tel_viz_dir",
-        help="Path to a folder containing telemetry.pt and labels.pt, or a parent "
-             "with timestamped run sub-folders — the latest run is auto-selected.",
-    )
-
+    run_path = _run_selectbox("tel_viz")
     telemetry: torch.Tensor | None = None
     labels: torch.Tensor | None = None
 
-    if dir_path:
-        raw = load_tensors_from_dir(dir_path, _FILENAMES)
-        if raw is not None:
-            (telemetry, labels), resolved_path = raw
-            resolved = str(resolved_path)
-            msg = (
-                f"Auto-selected latest run: `{resolved}`"
-                if resolved != dir_path
-                else f"Loaded from `{resolved}`"
-            )
-            st.success(msg)
-            if st.session_state.get("tel_viz_last_synced") != resolved:
-                for suffix in ("stat", "ml", "deep", "cmp"):
-                    st.session_state[f"tel_{suffix}_dir"] = resolved
-                st.session_state["tel_viz_last_synced"] = resolved
-        else:
-            st.warning(f"`{dir_path}` not found or contains no valid run data.")
-
-    uploaded = st.file_uploader(
-        "Or drag-and-drop a folder to override",
-        accept_multiple_files="directory",
-        type=None,
-        key="tel_viz_upload",
-    )
-    if uploaded:
-        tensors = load_tensors_from_upload(uploaded, _FILENAMES)
-        if tensors is None:
-            st.error("Expected telemetry.pt and labels.pt in the selected folder.")
-        else:
-            telemetry, labels = tensors[0], tensors[1]
+    if run_path is not None:
+        resolved = str(run_path)
+        st.caption(f"Loaded `{resolved}`")
+        tensors = tuple(
+            torch.load(run_path / f, map_location="cpu", weights_only=True)
+            for f in _FILENAMES
+        )
+        telemetry, labels = tensors[0], tensors[1]
+        if st.session_state.get("tel_viz_last_synced") != resolved:
+            for suffix in ("stat", "ml", "deep", "cmp"):
+                st.session_state[f"tel_{suffix}_dir"] = resolved
+            st.session_state["tel_viz_last_synced"] = resolved
 
     if telemetry is None or labels is None:
         st.info("No data loaded — generate data in the **Generator** tab first.")

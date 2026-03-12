@@ -7,6 +7,24 @@ from pathlib import Path
 import torch
 
 
+def list_runs(base_dir: str, filenames: tuple[str, ...]) -> list[Path]:
+    """Return all valid run directories inside *base_dir*, newest first.
+
+    A directory is valid if it contains every file in *filenames*.
+    """
+    base = Path(base_dir)
+    if not base.exists():
+        return []
+    return sorted(
+        [
+            d for d in base.iterdir()
+            if d.is_dir() and all((d / f).exists() for f in filenames)
+        ],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+
+
 def _find_latest_run(base: Path) -> Path | None:
     """Return the most recently modified sub-directory of *base* that contains
     both patches.pt (or telemetry.pt) and labels.pt, or None if none exists."""

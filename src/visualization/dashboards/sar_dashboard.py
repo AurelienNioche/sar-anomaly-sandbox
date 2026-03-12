@@ -10,6 +10,7 @@ from src.data.generators import SpeckleSARGenerator
 from src.data.generators.speckle import SpeckleSARGeneratorConfig
 from src.models.baselines import RXDetector
 from src.visualization.dashboards.data_io import (
+    list_runs,
     load_tensors_from_dir,
     load_tensors_from_upload,
 )
@@ -120,38 +121,26 @@ def load_patches_labels_from_dir(
 
 
 def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
-    dir_path = st.text_input(
-        "Data directory",
-        value=DEFAULT_DATA_DIR,
-        key=f"{tab_key}_dir",
-        help="Path to a folder containing patches.pt and labels.pt (or a parent "
-             "with timestamped run sub-folders — the latest run is loaded automatically).",
-    )
-    result_tensors = None
-    if dir_path:
-        raw = load_patches_labels_from_dir(dir_path)
-        if raw is not None:
-            patches, labels, resolved = raw
-            result_tensors = (patches, labels)
-            resolved_str = str(resolved)
-            if resolved_str != dir_path:
-                st.success(f"Auto-selected latest run: `{resolved_str}`")
-            else:
-                st.success(f"Loaded from `{resolved_str}`")
-        else:
-            st.warning(f"`{dir_path}` not found or contains no valid run data.")
+    runs = list_runs(DEFAULT_DATA_DIR, _FILENAMES)
+    if not runs:
+        st.info(f"No saved runs found in `{DEFAULT_DATA_DIR}` — generate data first.")
+        return None
 
-    uploaded = st.file_uploader(
-        "Or drag-and-drop a folder to override",
-        accept_multiple_files="directory",
-        type=None,
-        key=f"{tab_key}_upload",
+    options = [r.name for r in runs]
+    selected = st.selectbox(
+        "Saved run",
+        options,
+        index=0,
+        key=f"{tab_key}_run_select",
+        help="Runs are listed newest first.",
     )
-    if uploaded:
-        result_tensors = load_patches_labels(uploaded)
-        if result_tensors is None:
-            st.error("Expected patches.pt and labels.pt in the selected folder.")
-    return result_tensors
+    run_path = runs[options.index(selected)]
+    tensors = tuple(
+        torch.load(run_path / f, map_location="cpu", weights_only=True)
+        for f in _FILENAMES
+    )
+    st.caption(f"Loaded `{run_path}`")
+    return tensors[0], tensors[1]
 
 
 def save_run(
