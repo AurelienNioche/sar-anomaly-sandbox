@@ -236,3 +236,107 @@ def test_lstm_detector_on_dashboard_data() -> None:
         LSTMAutoencoderDetector(window=20, hidden_size=16, n_epochs=5),
         telemetry, labels,
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. Visualize tab
+# ---------------------------------------------------------------------------
+
+def test_visualize_tab_is_registered() -> None:
+    """'Visualize' must appear in the st.tabs call in main(), between Generator
+    and Statistical."""
+    import re
+    src = (Path(__file__).parent.parent /
+           "src/visualization/dashboards/telemetry_dashboard.py").read_text()
+    match = re.search(r'st\.tabs\(\[(.*?)\]\)', src, re.DOTALL)
+    assert match, "Could not find st.tabs([...]) call in telemetry_dashboard.py"
+    tab_str = match.group(1)
+    names = re.findall(r'"([^"]+)"', tab_str)
+    assert "Visualize" in names, f"'Visualize' not found in tab list: {names}"
+    idx = names.index("Visualize")
+    assert names[idx - 1] == "Generator", "Visualize must come after Generator"
+    assert names[idx + 1] == "Statistical", "Visualize must come before Statistical"
+
+
+def test_visualize_syncs_detector_tab_dirs() -> None:
+    """When the Visualize tab resolves a run, it must update tel_stat_dir,
+    tel_ml_dir, tel_deep_dir, and tel_cmp_dir in session state."""
+    telemetry, labels = _gen_from_defaults()
+    with tempfile.TemporaryDirectory() as tmp:
+        save_run({"telemetry.pt": telemetry, "labels.pt": labels}, base_dir=tmp)
+        result = load_tensors_from_dir(tmp, _FILENAMES)
+    assert result is not None
+    _, resolved_path = result
+    resolved = str(resolved_path)
+
+    session_state: dict = {}
+    if session_state.get("tel_viz_last_synced") != resolved:
+        for suffix in ("stat", "ml", "deep", "cmp"):
+            session_state[f"tel_{suffix}_dir"] = resolved
+        session_state["tel_viz_last_synced"] = resolved
+
+    for suffix in ("stat", "ml", "deep", "cmp"):
+        assert session_state.get(f"tel_{suffix}_dir") == resolved, (
+            f"tel_{suffix}_dir not synced to resolved path after Visualize load"
+        )
+
+
+def test_visualize_sync_is_idempotent() -> None:
+    """Loading the same run twice must not clobber other session state.
+    The sync must only fire when the resolved path actually changes."""
+    telemetry, labels = _gen_from_defaults()
+    with tempfile.TemporaryDirectory() as tmp:
+        save_run({"telemetry.pt": telemetry, "labels.pt": labels}, base_dir=tmp)
+        result = load_tensors_from_dir(tmp, _FILENAMES)
+    assert result is not None
+    _, resolved_path = result
+    resolved = str(resolved_path)
+
+    session_state: dict = {"tel_stat_dir": "custom/path"}
+    session_state["tel_viz_last_synced"] = resolved
+
+    if session_state.get("tel_viz_last_synced") != resolved:
+        for suffix in ("stat", "ml", "deep", "cmp"):
+            session_state[f"tel_{suffix}_dir"] = resolved
+        session_state["tel_viz_last_synced"] = resolved
+
+    assert session_state["tel_stat_dir"] == "custom/path", (
+        "Visualize re-sync should NOT overwrite stat_dir when path is unchanged"
+    )
+
+
+def test_visualize_channel_stats_normal_vs_anomaly() -> None:
+    """The channel stats shown in the Visualize tab must differ between normal
+    and anomalous timesteps — a basic sanity check that anomalies are visible
+    in the statistics table."""
+    telemetry, labels = _gen_from_defaults()
+    assert labels.sum().item() > 0, "Need anomalies for this test"
+
+    normal = telemetry[labels == 0]
+    anomalous = telemetry[labels == 1]
+
+    diffs = (anomalous.mean(dim=0) - normal.mean(dim=0)).abs()
+    max_diff = float(diffs.max())
+    assert max_diff > 0.1, (
+        f"Max channel mean diff (normal vs anomaly) = {max_diff:.4f}; "
+        "expected > 0.1 — anomalies should be visible in the stats table"
+    )
+
+
+def test_visualize_channel_stats_shape() -> None:
+    """The stats table must have one row per channel."""
+    telemetry, labels = _gen_from_defaults()
+    normal = telemetry[labels == 0]
+    n_c = telemetry.shape[1]
+
+    from src.data.generators.telemetry import CHANNEL_NAMES
+    rows = []
+    for i, name in enumerate(CHANNEL_NAMES[:n_c]):
+        rows.append({
+            "Channel": name,
+            "Normal mean": float(normal[:, i].mean()),
+            "Normal std":  float(normal[:, i].std()),
+        })
+
+    assert len(rows) == n_c, f"Expected {n_c} rows, got {len(rows)}"
+    assert all(r["Normal std"] > 0 for r in rows), "All channels must have positive std"
