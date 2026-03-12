@@ -67,9 +67,26 @@ def test_load_patches_labels_from_dir_valid() -> None:
         torch.save(labels, Path(tmp) / "labels.pt")
         result = load_patches_labels_from_dir(tmp)
     assert result is not None
-    patches_out, labels_out = result
+    patches_out, labels_out, resolved = result
     assert patches_out.shape == (10, 1, 16, 16)
     assert labels_out.shape == (10,)
+    assert resolved == Path(tmp)
+
+
+def test_load_patches_labels_from_dir_auto_latest() -> None:
+    """When patches.pt is in a subdirectory, the latest run is auto-selected."""
+    patches = torch.ones(5, 1, 8, 8)
+    labels = torch.zeros(5, dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "2026-03-12_10-00-00"
+        run_dir.mkdir()
+        torch.save(patches, run_dir / "patches.pt")
+        torch.save(labels, run_dir / "labels.pt")
+        result = load_patches_labels_from_dir(tmp)
+    assert result is not None
+    patches_out, labels_out, resolved = result
+    assert patches_out.shape == (5, 1, 8, 8)
+    assert resolved == run_dir
 
 
 def test_load_patches_labels_from_dir_missing() -> None:

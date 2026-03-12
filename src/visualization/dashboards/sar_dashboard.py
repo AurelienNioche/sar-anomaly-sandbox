@@ -22,7 +22,7 @@ GEN_DEFAULTS: dict = {
     "anomaly_ratio": 0.1,
     "anomaly_size": 3,
     "base_intensity": 1.0,
-    "anomaly_intensity": 3.0,
+    "anomaly_intensity": 5.0,
     "seed": 42,
     "n_samples": 16,
 }
@@ -97,6 +97,19 @@ def render_patch_grid_with_outcomes(
 DEFAULT_DATA_DIR = "data/synthetic"
 
 
+def _find_latest_run(base: Path) -> Path | None:
+    """Return the most recently modified subdirectory of *base* that contains
+    both patches.pt and labels.pt, or None if none exists."""
+    candidates = sorted(
+        (d for d in base.iterdir() if d.is_dir()
+         and (d / "patches.pt").exists()
+         and (d / "labels.pt").exists()),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
 def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | None:
     patches_file = None
     labels_file = None
@@ -119,15 +132,28 @@ def load_patches_labels(uploaded: list) -> tuple[torch.Tensor, torch.Tensor] | N
 
 def load_patches_labels_from_dir(
     dir_path: str,
-) -> tuple[torch.Tensor, torch.Tensor] | None:
+) -> tuple[torch.Tensor, torch.Tensor, Path] | None:
+    """Load patches and labels from *dir_path*.
+
+    If patches.pt / labels.pt are not directly in that directory, falls back
+    to the most recently modified subdirectory that contains them (i.e. the
+    latest timestamped run).  Returns (patches, labels, resolved_path) or None.
+    """
     p = Path(dir_path)
+    if not p.exists():
+        return None
     patches_path = p / "patches.pt"
     labels_path = p / "labels.pt"
     if not patches_path.exists() or not labels_path.exists():
-        return None
+        latest = _find_latest_run(p)
+        if latest is None:
+            return None
+        patches_path = latest / "patches.pt"
+        labels_path = latest / "labels.pt"
+        p = latest
     patches = torch.load(patches_path, map_location="cpu", weights_only=True)
     labels = torch.load(labels_path, map_location="cpu", weights_only=True)
-    return patches, labels
+    return patches, labels, p
 
 
 def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -135,15 +161,22 @@ def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None
         "Data directory",
         value=DEFAULT_DATA_DIR,
         key=f"{tab_key}_dir",
-        help="Path to a folder containing patches.pt and labels.pt",
+        help="Path to a folder containing patches.pt and labels.pt (or a parent "
+             "with timestamped run sub-folders — the latest run is loaded automatically).",
     )
-    result = None
+    result_tensors = None
     if dir_path:
-        result = load_patches_labels_from_dir(dir_path)
-        if result is not None:
-            st.success(f"Loaded from `{dir_path}`")
+        raw = load_patches_labels_from_dir(dir_path)
+        if raw is not None:
+            patches, labels, resolved = raw
+            result_tensors = (patches, labels)
+            resolved_str = str(resolved)
+            if resolved_str != dir_path:
+                st.success(f"Auto-selected latest run: `{resolved_str}`")
+            else:
+                st.success(f"Loaded from `{resolved_str}`")
         else:
-            st.warning(f"`{dir_path}` not found or missing patches.pt / labels.pt")
+            st.warning(f"`{dir_path}` not found or contains no valid run data.")
 
     uploaded = st.file_uploader(
         "Or drag-and-drop a folder to override",
@@ -152,10 +185,10 @@ def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None
         key=f"{tab_key}_upload",
     )
     if uploaded:
-        result = load_patches_labels(uploaded)
-        if result is None:
+        result_tensors = load_patches_labels(uploaded)
+        if result_tensors is None:
             st.error("Expected patches.pt and labels.pt in the selected folder.")
-    return result
+    return result_tensors
 
 
 def _reset_generator_defaults() -> None:
@@ -183,7 +216,7 @@ def tab_generator() -> None:
             "Base intensity", 0.1, 2.0, 1.0, 0.1, key="base_intensity"
         )
         anomaly_intensity = st.slider(
-            "Anomaly intensity", 1.0, 5.0, 3.0, 0.5, key="anomaly_intensity"
+            "Anomaly intensity", 1.0, 10.0, 5.0, 0.5, key="anomaly_intensity"
         )
         seed = st.number_input("Seed (optional)", min_value=0, value=42, step=1, key="seed")
         n_samples = st.slider("Samples to generate", 4, 32, 16, 4, key="n_samples")

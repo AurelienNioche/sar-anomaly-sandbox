@@ -3,5 +3,5 @@ n_looks: 4
 anomaly_ratio: 0.1
 anomaly_size: 3
 base_intensity: 1.0
-anomaly_intensity: 3.0
+anomaly_intensity: 5.0
 seed: 42
