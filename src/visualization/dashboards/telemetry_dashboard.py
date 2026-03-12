@@ -287,6 +287,7 @@ def tab_statistical() -> None:
     detector_name = st.selectbox(
         "Detector",
         ["PerChannelZScore", "Mahalanobis", "CUSUM"],
+        index=1,
         key="tel_stat_det",
     )
     window = st.slider("Window size", 5, 100, 20, key="tel_stat_window")
@@ -330,9 +331,9 @@ def tab_ml() -> None:
     n_train = max(1, int(len(normal) * train_frac))
     train = normal[:n_train]
     detector_name = st.selectbox(
-        "Detector", ["Isolation Forest", "One-Class SVM"], key="tel_ml_det"
+        "Detector", ["Isolation Forest", "One-Class SVM"], index=1, key="tel_ml_det"
     )
-    window = st.slider("Window size", 5, 50, 20, key="tel_ml_window")
+    window = st.slider("Window size", 5, 50, 10, key="tel_ml_window")
 
     if st.button("Run", key="tel_ml_run"):
         if detector_name == "Isolation Forest":

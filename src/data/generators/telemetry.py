@@ -141,7 +141,7 @@ class TelemetryGenerator:
             return
         ch = random.randint(0, self.config.n_channels - 1)
         sign = 1 if random.random() > 0.5 else -1
-        data[start, ch] += sign * 5.0 * float(self._channel_std[ch])
+        data[start, ch] += sign * 8.0 * float(self._channel_std[ch])
         labels[start] = 1
 
     def _inject_step(self, data: np.ndarray, labels: np.ndarray) -> None:
@@ -153,7 +153,7 @@ class TelemetryGenerator:
             return
         ch = random.randint(0, self.config.n_channels - 1)
         sign = 1 if random.random() > 0.5 else -1
-        shift = sign * 3.0 * float(self._channel_std[ch])
+        shift = sign * 6.0 * float(self._channel_std[ch])
         data[start : start + duration, ch] += shift
         labels[start : start + duration] = 1
 
@@ -165,7 +165,7 @@ class TelemetryGenerator:
         if start is None:
             return
         ch = random.randint(0, self.config.n_channels - 1)
-        final_mag = 4.0 * float(self._channel_std[ch])
+        final_mag = 6.0 * float(self._channel_std[ch])
         ramp = np.linspace(0, final_mag, duration, dtype=np.float32)
         data[start : start + duration, ch] += ramp
         labels[start : start + duration] = 1

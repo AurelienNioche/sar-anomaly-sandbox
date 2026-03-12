@@ -13,25 +13,32 @@ import torch
 class PerChannelZScore:
     """Per-channel rolling z-score. Anomaly score = max |z| across channels."""
 
-    def __init__(self, window: int = 50) -> None:
+    def __init__(self, window: int = 1) -> None:
         self.window = window
         self.mean: torch.Tensor | None = None
         self.std: torch.Tensor | None = None
+        self.z99: torch.Tensor | None = None
 
     def fit(self, normal: torch.Tensor) -> "PerChannelZScore":
-        self.mean = normal.float().mean(dim=0)
-        self.std = normal.float().std(dim=0).clamp(min=1e-6)
+        d = normal.float()
+        self.mean = d.mean(dim=0)
+        self.std = d.std(dim=0).clamp(min=1e-6)
+        z_train = (d - self.mean).abs() / self.std
+        # Per-channel 99th-percentile calibration: normalise each channel's score
+        # so that its training p99 maps to 1.0.  This prevents a high-variance
+        # channel (e.g. slow OU) from dominating the per-timestep max.
+        self.z99 = z_train.quantile(0.99, dim=0).clamp(min=1e-3)
         return self
 
     def score(self, data: torch.Tensor) -> torch.Tensor:
-        if self.mean is None or self.std is None:
+        if self.mean is None or self.std is None or self.z99 is None:
             raise RuntimeError("Call fit() first.")
-        z = (data.float() - self.mean) / self.std
-        scores = z.abs()
+        z = (data.float() - self.mean).abs() / self.std
+        scores = z / self.z99
         if self.window > 1:
+            n_t = scores.shape[0]
             kernel = torch.ones(1, 1, self.window) / self.window
             smoothed = []
-            n_t = scores.shape[0]
             for c in range(scores.shape[1]):
                 ch = scores[:, c].unsqueeze(0).unsqueeze(0)
                 pad_l = (self.window - 1) // 2

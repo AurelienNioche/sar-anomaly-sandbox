@@ -80,3 +80,5 @@ Synthetic satellite telemetry (power, thermal, attitude, RF channels) with four 
 - **Deep**: `LSTMAutoencoderDetector`
 
 Config: `configs/data/telemetry.yaml`.
+
+For a full explanation of how each detector works, its strengths and weaknesses, and expected performance under different generator parameterisations, see **[docs/telemetry_detection.md](docs/telemetry_detection.md)**.

@@ -13,6 +13,7 @@ API (same as statistical detectors):
 import numpy as np
 import torch
 from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
 
@@ -37,8 +38,9 @@ def _make_windows(x: np.ndarray, window: int) -> tuple[np.ndarray, np.ndarray]:
 class IsolationForestDetector:
     """Isolation Forest over sliding windows of telemetry data."""
 
-    def __init__(self, window: int = 20, n_estimators: int = 100, random_state: int = 0) -> None:
+    def __init__(self, window: int = 10, n_estimators: int = 100, random_state: int = 0) -> None:
         self.window = window
+        self.scaler = StandardScaler()
         self.model = IsolationForest(
             n_estimators=n_estimators,
             contamination="auto",
@@ -47,11 +49,13 @@ class IsolationForestDetector:
 
     def fit(self, normal: torch.Tensor) -> "IsolationForestDetector":
         windows, _ = _make_windows(normal.float().numpy(), self.window)
+        windows = self.scaler.fit_transform(windows)
         self.model.fit(windows)
         return self
 
     def score(self, data: torch.Tensor) -> torch.Tensor:
         windows, _ = _make_windows(data.float().numpy(), self.window)
+        windows = self.scaler.transform(windows)
         raw = self.model.score_samples(windows)
         scores = -raw.astype(np.float32)
         return torch.from_numpy(scores)
@@ -63,17 +67,20 @@ class IsolationForestDetector:
 class OneClassSVMDetector:
     """One-Class SVM over sliding windows of telemetry data."""
 
-    def __init__(self, window: int = 20, nu: float = 0.1, kernel: str = "rbf") -> None:
+    def __init__(self, window: int = 10, nu: float = 0.1, kernel: str = "rbf") -> None:
         self.window = window
+        self.scaler = StandardScaler()
         self.model = OneClassSVM(nu=nu, kernel=kernel)
 
     def fit(self, normal: torch.Tensor) -> "OneClassSVMDetector":
         windows, _ = _make_windows(normal.float().numpy(), self.window)
+        windows = self.scaler.fit_transform(windows)
         self.model.fit(windows)
         return self
 
     def score(self, data: torch.Tensor) -> torch.Tensor:
         windows, _ = _make_windows(data.float().numpy(), self.window)
+        windows = self.scaler.transform(windows)
         raw = self.model.score_samples(windows)
         scores = -raw.astype(np.float32)
         return torch.from_numpy(scores)
