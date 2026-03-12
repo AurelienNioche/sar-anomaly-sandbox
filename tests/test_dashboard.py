@@ -1,4 +1,5 @@
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -8,9 +9,11 @@ from sklearn.metrics import f1_score, precision_score, recall_score
 from src.models.baselines import RXDetector
 from src.visualization.dashboards.sar_dashboard import (
     LABEL_NAMES,
+    _find_latest_run,
     load_patches_labels_from_dir,
     outcome_label,
     patch_to_display,
+    save_run,
 )
 
 
@@ -98,6 +101,56 @@ def test_load_patches_labels_from_dir_missing() -> None:
 def test_load_patches_labels_from_dir_nonexistent() -> None:
     result = load_patches_labels_from_dir("/nonexistent/path")
     assert result is None
+
+
+def test_save_run_creates_timestamped_dir() -> None:
+    patches = torch.ones(6, 1, 16, 16)
+    labels = torch.zeros(6, dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = save_run(patches, labels, base_dir=tmp)
+        assert saved.exists()
+        assert (saved / "patches.pt").exists()
+        assert (saved / "labels.pt").exists()
+        assert saved.parent == Path(tmp)
+
+
+def test_save_run_data_roundtrip() -> None:
+    patches = torch.rand(8, 1, 16, 16)
+    labels = torch.tensor([0, 1, 0, 1, 0, 0, 1, 0], dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = save_run(patches, labels, base_dir=tmp)
+        loaded_patches = torch.load(saved / "patches.pt", weights_only=True)
+        loaded_labels = torch.load(saved / "labels.pt", weights_only=True)
+    assert torch.equal(patches, loaded_patches)
+    assert torch.equal(labels, loaded_labels)
+
+
+def test_save_run_multiple_runs_distinct_dirs() -> None:
+    patches = torch.ones(4, 1, 8, 8)
+    labels = torch.zeros(4, dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        d1 = save_run(patches, labels, base_dir=tmp)
+        time.sleep(1.1)
+        d2 = save_run(patches, labels, base_dir=tmp)
+        assert d1 != d2
+        assert len(list(Path(tmp).iterdir())) == 2
+
+
+def test_find_latest_run_picks_newest() -> None:
+    patches = torch.ones(3, 1, 8, 8)
+    labels = torch.zeros(3, dtype=torch.long)
+    with tempfile.TemporaryDirectory() as tmp:
+        d1 = save_run(patches, labels, base_dir=tmp)
+        time.sleep(1.1)
+        d2 = save_run(patches, labels, base_dir=tmp)
+        latest = _find_latest_run(Path(tmp))
+    assert latest == d2
+    assert latest != d1
+
+
+def test_find_latest_run_empty_dir() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _find_latest_run(Path(tmp)) is None
 
 
 def test_detector_tab_score_shape() -> None:

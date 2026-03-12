@@ -192,6 +192,20 @@ def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None
     return result_tensors
 
 
+def save_run(
+    patches: torch.Tensor,
+    labels: torch.Tensor,
+    base_dir: str = "data/synthetic",
+) -> Path:
+    """Save patches and labels to a timestamped sub-folder of *base_dir*."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_dir = Path(base_dir) / timestamp
+    save_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(patches, save_dir / "patches.pt")
+    torch.save(labels, save_dir / "labels.pt")
+    return save_dir
+
+
 def _reset_generator_defaults() -> None:
     for key, val in GEN_DEFAULTS.items():
         st.session_state[key] = val
@@ -244,11 +258,10 @@ def tab_generator() -> None:
 
         if "gen_patches" in st.session_state:
             if st.button("Save to disk"):
-                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                save_dir = Path("data/synthetic") / timestamp
-                save_dir.mkdir(parents=True, exist_ok=True)
-                torch.save(st.session_state["gen_patches"], save_dir / "patches.pt")
-                torch.save(st.session_state["gen_labels"], save_dir / "labels.pt")
+                save_dir = save_run(
+                    st.session_state["gen_patches"],
+                    st.session_state["gen_labels"],
+                )
                 st.session_state["gen_saved_path"] = str(save_dir)
 
             if st.session_state.get("gen_saved_path"):
