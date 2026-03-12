@@ -277,6 +277,89 @@ def tab_generator() -> None:
             st.info("Click **Generate** to create telemetry with the current parameters.")
 
 
+def tab_visualize() -> None:
+    st.header("Visualize")
+    st.markdown(
+        "Browse any saved run and inspect the raw telemetry. "
+        "The run open here automatically becomes the data source for all detector tabs."
+    )
+
+    dir_path = st.text_input(
+        "Data directory",
+        value=DEFAULT_DATA_DIR,
+        key="tel_viz_dir",
+        help="Path to a folder containing telemetry.pt and labels.pt, or a parent "
+             "with timestamped run sub-folders — the latest run is auto-selected.",
+    )
+
+    telemetry: torch.Tensor | None = None
+    labels: torch.Tensor | None = None
+
+    if dir_path:
+        raw = load_tensors_from_dir(dir_path, _FILENAMES)
+        if raw is not None:
+            (telemetry, labels), resolved_path = raw
+            resolved = str(resolved_path)
+            msg = (
+                f"Auto-selected latest run: `{resolved}`"
+                if resolved != dir_path
+                else f"Loaded from `{resolved}`"
+            )
+            st.success(msg)
+            if st.session_state.get("tel_viz_last_synced") != resolved:
+                for suffix in ("stat", "ml", "deep", "cmp"):
+                    st.session_state[f"tel_{suffix}_dir"] = resolved
+                st.session_state["tel_viz_last_synced"] = resolved
+        else:
+            st.warning(f"`{dir_path}` not found or contains no valid run data.")
+
+    uploaded = st.file_uploader(
+        "Or drag-and-drop a folder to override",
+        accept_multiple_files="directory",
+        type=None,
+        key="tel_viz_upload",
+    )
+    if uploaded:
+        tensors = load_tensors_from_upload(uploaded, _FILENAMES)
+        if tensors is None:
+            st.error("Expected telemetry.pt and labels.pt in the selected folder.")
+        else:
+            telemetry, labels = tensors[0], tensors[1]
+
+    if telemetry is None or labels is None:
+        st.info("No data loaded — generate data in the **Generator** tab first.")
+        return
+
+    n_t, n_c = telemetry.shape
+    n_anomaly = int(labels.sum().item())
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Timesteps", n_t)
+    c2.metric("Anomalous timesteps", n_anomaly)
+    c3.metric("Anomaly ratio", f"{n_anomaly / n_t:.1%}")
+
+    st.subheader("Time Series")
+    names = CHANNEL_NAMES[:n_c]
+    _plot_timeseries(telemetry, labels, title="", channel_names=names)
+
+    st.subheader("Channel Statistics")
+    normal = telemetry[labels == 0]
+    anom = telemetry[labels == 1] if n_anomaly > 0 else None
+    rows = []
+    for i, name in enumerate(names):
+        row: dict = {
+            "Channel": name,
+            "Normal mean": f"{float(normal[:, i].mean()):.4f}",
+            "Normal std":  f"{float(normal[:, i].std()):.4f}",
+            "Normal min":  f"{float(normal[:, i].min()):.4f}",
+            "Normal max":  f"{float(normal[:, i].max()):.4f}",
+        }
+        if anom is not None:
+            row["Anomaly mean"] = f"{float(anom[:, i].mean()):.4f}"
+            row["Anomaly std"]  = f"{float(anom[:, i].std()):.4f}"
+        rows.append(row)
+    st.table(rows)
+
+
 def tab_statistical() -> None:
     st.header("Statistical Detectors")
     st.markdown(
@@ -519,16 +602,18 @@ def tab_comparison() -> None:
 
 def main() -> None:
     st.title("Telemetry Anomaly Sandbox")
-    tabs = st.tabs(["Generator", "Statistical", "ML", "Deep", "Comparison"])
+    tabs = st.tabs(["Generator", "Visualize", "Statistical", "ML", "Deep", "Comparison"])
     with tabs[0]:
         tab_generator()
     with tabs[1]:
-        tab_statistical()
+        tab_visualize()
     with tabs[2]:
-        tab_ml()
+        tab_statistical()
     with tabs[3]:
-        tab_deep()
+        tab_ml()
     with tabs[4]:
+        tab_deep()
+    with tabs[5]:
         tab_comparison()
 
 
