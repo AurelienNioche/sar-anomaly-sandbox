@@ -27,7 +27,7 @@ _FILENAMES = ("telemetry.pt", "labels.pt")
 GEN_DEFAULTS: dict = {
     "tel_n_channels": 7,
     "tel_n_timesteps": 1000,
-    "tel_noise_std": 0.1,
+    "tel_noise_std": 0.05,
     "tel_orbital_period": 200,
     "tel_anomaly_ratio": 0.05,
     "tel_seed": 42,
@@ -201,7 +201,7 @@ def tab_generator() -> None:
     with col1:
         n_channels = st.slider("Channels", 2, 10, 7, key="tel_n_channels")
         n_timesteps = st.slider("Timesteps", 200, 5000, 1000, 100, key="tel_n_timesteps")
-        noise_std = st.slider("Noise std", 0.01, 1.0, 0.1, 0.01, key="tel_noise_std")
+        noise_std = st.slider("Noise std", 0.01, 0.5, 0.05, 0.01, key="tel_noise_std")
         orbital_period = st.slider(
             "Orbital period (steps)", 50, 500, 200, 10, key="tel_orbital_period"
         )
