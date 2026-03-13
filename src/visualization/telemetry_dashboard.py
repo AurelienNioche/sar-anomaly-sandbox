@@ -392,11 +392,13 @@ def tab_generator() -> None:
         )
         seed = st.number_input("Seed", min_value=0, value=42, step=1, key="tel_seed")
 
+        def _reset_to_defaults() -> None:
+            for k, v in GEN_DEFAULTS.items():
+                st.session_state[k] = v
+
         col_gen, col_reset = st.columns(2)
         with col_reset:
-            if st.button("Reset to defaults", key="tel_reset"):
-                for k, v in GEN_DEFAULTS.items():
-                    st.session_state[k] = v
+            st.button("Reset to defaults", key="tel_reset", on_click=_reset_to_defaults)
         with col_gen:
             generate_clicked = st.button("Generate", key="tel_generate")
 
