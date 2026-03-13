@@ -44,5 +44,5 @@ patches, labels = gen.generate(1000)
 Or via CLI:
 
 ```bash
-run_generate --output data/synthetic --n_samples 1000
+run_generate --output data/synthetic/sar --n_samples 1000
 ```

@@ -18,6 +18,16 @@ CHANNEL_NAMES = [
 
 ANOMALY_TYPES = ("spike", "step", "ramp", "correlation_break")
 
+# Label encoding: 0 = normal; each anomaly type maps to a unique positive integer.
+# Models always receive binary labels (labels == 0 for normal, labels > 0 for anomaly).
+# The type ID is only used by the dashboard for visualization and per-type evaluation.
+ANOMALY_TYPE_IDS: dict[str, int] = {
+    "spike": 1,
+    "step": 2,
+    "ramp": 3,
+    "correlation_break": 4,
+}
+
 
 @dataclass
 class TelemetryGeneratorConfig:
@@ -47,12 +57,15 @@ class TelemetryGenerator:
     deviation (computed analytically from the channel model), so detection difficulty
     is consistent regardless of channel scale.
 
-    Anomaly types:
-    - spike             : one timestep, one channel shifts ±5σ
-    - step              : window, one channel shifts ±3σ
-    - ramp              : window, one channel drifts 0→4σ
-    - correlation_break : window, channel 1 decouples from channel 0 (same amplitude,
-                          zero correlation) — only detectable by multivariate methods
+    Anomaly types and their label IDs (see ANOMALY_TYPE_IDS):
+    - spike (1)             : one timestep, one channel shifts ±8σ
+    - step (2)              : window, one channel shifts ±6σ
+    - ramp (3)              : window, one channel drifts 0→6σ
+    - correlation_break (4) : window, channel 1 decouples from channel 0 (same amplitude,
+                              zero correlation) — only detectable by multivariate methods
+
+    Each event is of exactly one type, affects exactly one channel (two for
+    correlation_break), and occupies a contiguous non-overlapping window.
     """
 
     def __init__(self, config: TelemetryGeneratorConfig) -> None:
@@ -150,7 +163,7 @@ class TelemetryGenerator:
         ch = random.randint(0, self.config.n_channels - 1)
         sign = 1 if random.random() > 0.5 else -1
         data[start, ch] += sign * 8.0 * float(std[ch])
-        labels[start] = 1
+        labels[start] = ANOMALY_TYPE_IDS["spike"]
 
     def _inject_step(self, data: np.ndarray, labels: np.ndarray) -> None:
         std = self._require_channel_std()
@@ -164,7 +177,7 @@ class TelemetryGenerator:
         sign = 1 if random.random() > 0.5 else -1
         shift = sign * 6.0 * float(std[ch])
         data[start : start + duration, ch] += shift
-        labels[start : start + duration] = 1
+        labels[start : start + duration] = ANOMALY_TYPE_IDS["step"]
 
     def _inject_ramp(self, data: np.ndarray, labels: np.ndarray) -> None:
         std = self._require_channel_std()
@@ -178,7 +191,7 @@ class TelemetryGenerator:
         final_mag = 6.0 * float(std[ch])
         ramp = np.linspace(0, final_mag, duration, dtype=np.float32)
         data[start : start + duration, ch] += ramp
-        labels[start : start + duration] = 1
+        labels[start : start + duration] = ANOMALY_TYPE_IDS["ramp"]
 
     def _inject_correlation_break(self, data: np.ndarray, labels: np.ndarray) -> None:
         std = self._require_channel_std()
@@ -194,9 +207,14 @@ class TelemetryGenerator:
         data[start : start + duration, 1] = (
             np.random.randn(duration).astype(np.float32) * float(std[1])
         )
-        labels[start : start + duration] = 1
+        labels[start : start + duration] = ANOMALY_TYPE_IDS["correlation_break"]
 
-    def generate(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def _generate_one(self) -> tuple[np.ndarray, np.ndarray]:
+        """Generate a single time series with injected anomalies.
+
+        Returns (data, labels) as numpy arrays of shape (T, C) and (T,).
+        Labels are multi-class: 0=normal, and ANOMALY_TYPE_IDS values for each type.
+        """
         n_t = self.config.n_timesteps
         data = self._make_baseline()
         labels = np.zeros(n_t, dtype=np.int64)
@@ -207,9 +225,29 @@ class TelemetryGenerator:
         itr = 0
         while injected < n_anomaly_steps and itr < max_iter:
             atype = random.choice(self.config.anomaly_types)
-            before = int(labels.sum())
+            before = int((labels > 0).sum())
             getattr(self, f"_inject_{atype}")(data, labels)
-            injected += int(labels.sum()) - before
+            injected += int((labels > 0).sum()) - before
             itr += 1
 
-        return torch.from_numpy(data), torch.from_numpy(labels)
+        return data, labels
+
+    def generate(self, n_series: int = 1) -> tuple[torch.Tensor, torch.Tensor]:
+        """Generate a dataset of *n_series* independent time series.
+
+        Returns:
+            telemetry : Tensor of shape (N, T, C)
+            labels    : Tensor of shape (N, T), dtype int64
+                        0 = normal; see ANOMALY_TYPE_IDS for anomaly type encoding.
+                        Convert to binary with ``(labels > 0)`` before passing to detectors.
+        """
+        all_data: list[np.ndarray] = []
+        all_labels: list[np.ndarray] = []
+        for _ in range(n_series):
+            data, labels = self._generate_one()
+            all_data.append(data)
+            all_labels.append(labels)
+        return (
+            torch.from_numpy(np.stack(all_data)),
+            torch.from_numpy(np.stack(all_labels)),
+        )

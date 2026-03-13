@@ -8,3 +8,5 @@ This directory holds synthetically generated SAR-like imagery for anomaly detect
 - `labels.pt`: Tensor of shape (N,) — 0 = normal, 1 = anomaly.
 
 For how the generation works, why we use Gamma speckle, and what bright targets represent, see [src/data/generators/README.md](../../src/data/generators/README.md).
+
+For detector guidance and expected performance, see [docs/sar_detection.md](../../docs/sar_detection.md).

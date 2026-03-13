@@ -42,6 +42,21 @@ Generated data lands in `data/synthetic/sar/` (SAR) and `data/synthetic/telemetr
 
 ---
 
+## Telemetry data contract
+
+`TelemetryGenerator.generate(n_series)` returns:
+
+```python
+telemetry : Tensor[N, T, C]   # N independent series
+labels    : Tensor[N, T]       # multi-class: 0=normal, 1=spike, 2=step, 3=ramp, 4=correlation_break
+```
+
+**For detectors, always convert labels to binary:** `(labels > 0)`.  The multi-class type IDs are used only by the dashboard for color-coded visualization and per-type AUC tables.
+
+The dashboard concatenates training series into a flat `(K*T, C)` tensor before calling `fit`. Each series is generated independently.
+
+---
+
 ## Detector contract
 
 Every telemetry detector exposes exactly this API:
@@ -52,7 +67,7 @@ detector.score(data: Tensor[T, C]) -> Tensor[T]   # higher = more anomalous
 detector.predict(data, threshold: float) -> Tensor[T]  # 0 / 1
 ```
 
-`fit` receives only **normal** (anomaly-free) training data. `score` returns a real-valued anomaly score per timestep. `predict` thresholds the score. There is no shared ABC or Protocol — the contract is documented in the module-level docstring of `telemetry_statistical.py`.
+`fit` receives only **normal** (anomaly-free) training data — flat `(T, C)`, not `(N, T, C)`. `score` returns a real-valued anomaly score per timestep. `predict` thresholds the score. There is no shared ABC or Protocol — the contract is documented in the module-level docstring of `telemetry_statistical.py`.
 
 ---
 
@@ -69,6 +84,8 @@ detector.predict(data, threshold: float) -> Tensor[T]  # 0 / 1
 | 6 | `reaction_wheel` | Ornstein-Uhlenbeck, slow mean-reverting |
 
 Anomaly magnitudes are expressed as multiples of each channel's own standard deviation (computed analytically), so detection difficulty is consistent regardless of scale. Current values: spike ±8σ, step ±6σ, ramp 0→6σ.
+
+Each anomaly event is of exactly one type, affects exactly one channel (two for `correlation_break`), and occupies a contiguous non-overlapping window. Label IDs: spike=1, step=2, ramp=3, correlation_break=4.
 
 ---
 

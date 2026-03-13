@@ -12,6 +12,9 @@ from src.utils.config import load_config
 
 CONFIG_PATH = Path(__file__).parent.parent / "configs" / "data" / "telemetry.yaml"
 
+N_SERIES = 10
+N_TRAIN = 5
+
 
 def _load_gen_config() -> TelemetryGeneratorConfig:
     cfg = load_config(CONFIG_PATH)
@@ -27,19 +30,28 @@ def _load_gen_config() -> TelemetryGeneratorConfig:
 
 
 def _generate() -> tuple[torch.Tensor, torch.Tensor]:
-    return TelemetryGenerator(_load_gen_config()).generate()
+    return TelemetryGenerator(_load_gen_config()).generate(n_series=N_SERIES)
 
 
 def _generate_with_types(types: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
     cfg = _load_gen_config()
     cfg.anomaly_types = types
     cfg.anomaly_ratio = 0.1
-    return TelemetryGenerator(cfg).generate()
+    return TelemetryGenerator(cfg).generate(n_series=N_SERIES)
 
 
-def _train_split(telemetry: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    normal = telemetry[labels == 0]
-    return normal[:max(1, len(normal) // 2)]
+def _train_split(telemetry: torch.Tensor) -> torch.Tensor:
+    """Return training data: first N_TRAIN series concatenated, no label filtering."""
+    n, t, c = telemetry.shape
+    return telemetry[:N_TRAIN].reshape(N_TRAIN * t, c)
+
+
+def _test_data(telemetry: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return test series (N_TRAIN..) concatenated with binary labels."""
+    n, t, c = telemetry.shape
+    tel_test = telemetry[N_TRAIN:].reshape((n - N_TRAIN) * t, c)
+    lab_test = (labels[N_TRAIN:].reshape(-1) > 0).long()
+    return tel_test, lab_test
 
 
 def test_zscore_pipeline_auc() -> None:
@@ -50,22 +62,24 @@ def test_zscore_pipeline_auc() -> None:
     normal data and is only detectable by multivariate methods.
     """
     telemetry, labels = _generate_with_types(["spike", "step", "ramp"])
-    assert labels.sum().item() > 0
-    train = _train_split(telemetry, labels)
+    assert (labels > 0).any()
+    train = _train_split(telemetry)
+    tel_test, lab_test = _test_data(telemetry, labels)
     det = PerChannelZScore(window=20).fit(train)
-    scores = det.score(telemetry).numpy()
-    auc = roc_auc_score(labels.numpy(), scores)
+    scores = det.score(tel_test).numpy()
+    auc = roc_auc_score(lab_test.numpy(), scores)
     assert auc > 0.75, f"PerChannelZScore AUC={auc:.3f} on spike/step/ramp data"
 
 
 def test_mahalanobis_pipeline_auc() -> None:
     """MahalanobisDetector on all anomaly types including correlation_break."""
     telemetry, labels = _generate()
-    assert labels.sum().item() > 0
-    train = _train_split(telemetry, labels)
+    assert (labels > 0).any()
+    train = _train_split(telemetry)
+    tel_test, lab_test = _test_data(telemetry, labels)
     det = MahalanobisDetector(window=20).fit(train)
-    scores = det.score(telemetry).numpy()
-    auc = roc_auc_score(labels.numpy(), scores)
+    scores = det.score(tel_test).numpy()
+    auc = roc_auc_score(lab_test.numpy(), scores)
     assert auc > 0.7, f"MahalanobisDetector AUC={auc:.3f} too low"
 
 
@@ -94,12 +108,13 @@ def test_cusum_pipeline_auc() -> None:
 
 def test_ml_pipeline_auc() -> None:
     telemetry, labels = _generate()
-    train = _train_split(telemetry, labels)
+    train = _train_split(telemetry)
+    tel_test, lab_test = _test_data(telemetry, labels)
 
     for det in [IsolationForestDetector(window=20), OneClassSVMDetector(window=20)]:
         det.fit(train)
-        scores = det.score(telemetry).numpy()
-        auc = roc_auc_score(labels.numpy(), scores)
+        scores = det.score(tel_test).numpy()
+        auc = roc_auc_score(lab_test.numpy(), scores)
         assert auc > 0.65, f"{type(det).__name__} AUC={auc:.3f} too low in integration test"
 
 

@@ -23,7 +23,10 @@ def _default_data(seed: int = 42, anomaly_types=None):
         orbital_period_steps=200, anomaly_ratio=0.05, seed=seed,
         anomaly_types=anomaly_types or ["spike", "step", "ramp", "correlation_break"],
     )
-    data, labels = TelemetryGenerator(cfg).generate()
+    data, labels_mc = TelemetryGenerator(cfg).generate(n_series=1)
+    data = data[0]           # (T, C)
+    labels_mc = labels_mc[0] # (T,) multi-class
+    labels = (labels_mc > 0).long()  # binary: 0=normal, 1=anomaly
     normal = data[labels == 0]
     train = normal[:len(normal) // 2]
     return train, data, labels
@@ -312,7 +315,9 @@ def test_higher_noise_degrades_all_detectors():
             n_channels=7, n_timesteps=1000, noise_std=noise, seed=42,
             anomaly_ratio=0.05,
         )
-        data, labels = TelemetryGenerator(cfg).generate()
+        data, labels_mc = TelemetryGenerator(cfg).generate(n_series=1)
+        data = data[0]
+        labels = (labels_mc[0] > 0).long()
         train = data[labels == 0][:400]
         y = labels.numpy()
         det = MahalanobisDetector(window=20).fit(train)
@@ -333,7 +338,9 @@ def test_removing_correlation_break_improves_zscore():
             n_channels=7, n_timesteps=1000, noise_std=0.05, seed=42,
             anomaly_ratio=0.05, anomaly_types=types,
         )
-        data, labels = TelemetryGenerator(cfg).generate()
+        data, labels_mc = TelemetryGenerator(cfg).generate(n_series=1)
+        data = data[0]
+        labels = (labels_mc[0] > 0).long()
         train = data[labels == 0][:400]
         y = labels.numpy()
         det = PerChannelZScore(window=1).fit(train)

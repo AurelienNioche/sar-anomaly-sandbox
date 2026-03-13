@@ -6,6 +6,37 @@ End-to-end guide: what the synthetic data looks like, how each detector works, a
 
 ## 1. Synthetic Data Generator
 
+### Dataset layout
+
+`TelemetryGenerator.generate(n_series)` returns two tensors:
+
+| Tensor | Shape | Dtype | Description |
+|---|---|---|---|
+| `telemetry` | `(N, T, C)` | float32 | N independent time series, T timesteps, C channels |
+| `labels` | `(N, T)` | int64 | Multi-class anomaly-type label per timestep (see below) |
+
+The dataset mirrors the structure of the SAR data: N independent "pictures", each independently generated from the same channel models with freshly sampled anomalies.
+
+### Label encoding
+
+Labels are **multi-class** for visualization and per-type evaluation, but **binary** for detectors.
+
+| Value | Meaning |
+|---|---|
+| 0 | Normal |
+| 1 | Spike |
+| 2 | Step |
+| 3 | Ramp |
+| 4 | Correlation break |
+
+**Convert to binary before passing to any detector:** `binary_labels = (labels > 0)`.  The type ID is only used by the dashboard (color-coded spans, per-type AUC table).
+
+### Each anomaly event
+
+- Exactly one anomaly type (no compound events).
+- Affects exactly one channel (two for `correlation_break`: channels 0 and 1).
+- Occupies a contiguous, non-overlapping window.
+
 ### Channel models
 
 The generator produces a `(T, C)` tensor of `C=7` channels, each with a physically-motivated model.
@@ -26,12 +57,12 @@ The generator produces a `(T, C)` tensor of `C=7` channels, each with a physical
 
 All anomaly magnitudes are expressed as multiples of each channel's own standard deviation, so detection difficulty is comparable across channels.
 
-| Type | Shape | Affected channels | Magnitude | Detectable by |
-|---|---|---|---|---|
-| `spike` | 1 timestep | 1 (random) | ±8σ | ZScore, Mahalanobis, OCSVM, LSTM |
-| `step` | 5–30 timesteps | 1 (random) | ±6σ | ZScore, Mahalanobis, CUSUM, OCSVM, LSTM |
-| `ramp` | 5–30 timesteps | 1 (random) | 0→6σ | ZScore (end only), Mahalanobis, CUSUM, LSTM |
-| `correlation_break` | 5–30 timesteps | 0+1 (power channels) | same amplitude, zero correlation | Mahalanobis, LSTM only |
+| Type | Label ID | Shape | Affected channels | Magnitude | Detectable by |
+|---|---|---|---|---|---|
+| `spike` | 1 | 1 timestep | 1 (random) | ±8σ | ZScore, Mahalanobis, OCSVM, LSTM |
+| `step` | 2 | 5–30 timesteps | 1 (random) | ±6σ | ZScore, Mahalanobis, CUSUM, OCSVM, LSTM |
+| `ramp` | 3 | 5–30 timesteps | 1 (random) | 0→6σ | ZScore (end only), Mahalanobis, CUSUM, LSTM |
+| `correlation_break` | 4 | 5–30 timesteps | 0+1 (power channels) | same amplitude, zero correlation | Mahalanobis, LSTM only |
 
 > `correlation_break` keeps channel 1's amplitude identical to normal.  A univariate z-score cannot see it; only multivariate methods that track cross-channel relationships can.
 
@@ -39,11 +70,12 @@ All anomaly magnitudes are expressed as multiples of each channel's own standard
 
 ```yaml
 # configs/data/telemetry.yaml  (defaults)
+n_series: 20
 n_channels: 7
 n_timesteps: 1000
 noise_std: 0.05          # Base Gaussian noise added to every channel
 orbital_period_steps: 200
-anomaly_ratio: 0.05      # Fraction of timesteps that are anomalous
+anomaly_ratio: 0.05      # Fraction of timesteps that are anomalous per series
 anomaly_types: [spike, step, ramp, correlation_break]
 anomaly_min_duration: 5
 anomaly_max_duration: 30

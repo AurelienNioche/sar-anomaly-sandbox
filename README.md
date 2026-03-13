@@ -50,7 +50,7 @@ streamlit run src/visualization/telemetry_dashboard.py
 
 | Tab | What it does |
 |---|---|
-| Generator | Configure and generate synthetic telemetry; auto-saves to `data/telemetry/` |
+| Generator | Configure and generate synthetic telemetry; auto-saves to `data/synthetic/telemetry/` |
 | Visualize | Browse any saved run; auto-syncs path to all detector tabs |
 | Statistical | PerChannelZScore, Mahalanobis, CUSUM |
 | ML | Isolation Forest, One-Class SVM |
@@ -72,10 +72,16 @@ Four anomaly types: **spike** (±8σ), **step** (±6σ), **ramp** (0→6σ), **c
 
 Config: `configs/data/telemetry.yaml`. Full detector guide: [docs/telemetry_detection.md](docs/telemetry_detection.md).
 
+## Synthetic SAR
+
+Patches with Gamma speckle (multilook) background and bright-target anomalies. One detector: RX (Reed-Xiaoli), AUC > 0.90 on default config.
+
+Config: `configs/data/synthetic.yaml`. Full detector guide: [docs/sar_detection.md](docs/sar_detection.md).
+
 ## CLI
 
 ```bash
-run_generate --output data/synthetic --n_samples 64
+run_generate --output data/synthetic/sar --n_samples 64
 ```
 
 ## Tests

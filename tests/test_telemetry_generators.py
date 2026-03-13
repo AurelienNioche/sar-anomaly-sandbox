@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from src.data.generators.telemetry import (
+    ANOMALY_TYPE_IDS,
     ANOMALY_TYPES,
     CHANNEL_NAMES,
     TelemetryGenerator,
@@ -22,27 +23,41 @@ def _make_gen(n_channels: int = 7, n_timesteps: int = 1000, seed: int = 0,
 
 def test_output_shapes() -> None:
     gen = _make_gen(n_channels=4, n_timesteps=500)
-    telemetry, labels = gen.generate()
-    assert telemetry.shape == (500, 4)
-    assert labels.shape == (500,)
+    telemetry, labels = gen.generate(n_series=3)
+    assert telemetry.shape == (3, 500, 4)
+    assert labels.shape == (3, 500)
 
 
-def test_labels_binary() -> None:
-    _, labels = _make_gen().generate()
-    assert set(labels.tolist()).issubset({0, 1})
+def test_single_series_shape() -> None:
+    gen = _make_gen(n_channels=4, n_timesteps=500)
+    telemetry, labels = gen.generate(n_series=1)
+    assert telemetry.shape == (1, 500, 4)
+    assert labels.shape == (1, 500)
+
+
+def test_labels_multiclass() -> None:
+    _, labels = _make_gen().generate(n_series=2)
+    assert set(labels.flatten().tolist()).issubset({0, 1, 2, 3, 4})
+
+
+def test_labels_type_ids_match_constants() -> None:
+    assert ANOMALY_TYPE_IDS["spike"] == 1
+    assert ANOMALY_TYPE_IDS["step"] == 2
+    assert ANOMALY_TYPE_IDS["ramp"] == 3
+    assert ANOMALY_TYPE_IDS["correlation_break"] == 4
 
 
 def test_anomaly_ratio_approximate() -> None:
     gen = _make_gen(n_timesteps=2000, anomaly_ratio=0.1, seed=1)
-    _, labels = gen.generate()
-    ratio = labels.float().mean().item()
+    _, labels = gen.generate(n_series=5)
+    ratio = (labels > 0).float().mean().item()
     assert 0.03 < ratio < 0.25, f"Anomaly ratio {ratio:.3f} outside expected range"
 
 
 def test_reproducibility() -> None:
     cfg = TelemetryGeneratorConfig(n_channels=4, n_timesteps=200, seed=42)
-    t1, l1 = TelemetryGenerator(cfg).generate()
-    t2, l2 = TelemetryGenerator(cfg).generate()
+    t1, l1 = TelemetryGenerator(cfg).generate(n_series=3)
+    t2, l2 = TelemetryGenerator(cfg).generate(n_series=3)
     assert torch.allclose(t1, t2)
     assert torch.equal(l1, l2)
 
@@ -51,12 +66,15 @@ def test_each_anomaly_type_injectable() -> None:
     for atype in ANOMALY_TYPES:
         gen = _make_gen(n_channels=7, n_timesteps=500, anomaly_ratio=0.1,
                         anomaly_types=[atype])
-        _, labels = gen.generate()
-        assert labels.sum().item() > 0, f"No anomalies injected for type '{atype}'"
+        _, labels = gen.generate(n_series=3)
+        type_id = ANOMALY_TYPE_IDS[atype]
+        assert (labels == type_id).any(), (
+            f"No anomalies of type '{atype}' (ID={type_id}) found across 3 series"
+        )
 
 
 def test_float32_dtype() -> None:
-    telemetry, _ = _make_gen(n_channels=4).generate()
+    telemetry, _ = _make_gen(n_channels=4).generate(n_series=2)
     assert telemetry.dtype == torch.float32
 
 
@@ -65,14 +83,14 @@ def test_channel_names_length() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Channel-model properties (the new design)
+# Channel-model properties
 # ---------------------------------------------------------------------------
 
 def test_channel_std_populated_after_generate() -> None:
     """_channel_std must be set and contain one positive value per channel."""
     gen = _make_gen()
     assert gen._channel_std is None, "_channel_std should be None before generate()"
-    gen.generate()
+    gen.generate(n_series=1)
     assert gen._channel_std is not None
     assert gen._channel_std.shape == (7,)
     assert (gen._channel_std > 0).all(), "All channel stds must be positive"
@@ -81,32 +99,36 @@ def test_channel_std_populated_after_generate() -> None:
 def test_channels_0_1_are_correlated() -> None:
     """power_v and batt_soc share a noise term and should be positively correlated."""
     gen = _make_gen(anomaly_ratio=0.0, seed=1)
-    telemetry, _ = gen.generate()
-    r = float(np.corrcoef(telemetry[:, 0].numpy(), telemetry[:, 1].numpy())[0, 1])
+    telemetry, _ = gen.generate(n_series=1)
+    series = telemetry[0]
+    r = float(np.corrcoef(series[:, 0].numpy(), series[:, 1].numpy())[0, 1])
     assert r > 0.5, f"Channels 0-1 correlation = {r:.3f}, expected > 0.5"
 
 
 def test_ou_channels_are_stationary() -> None:
     """gyro_x / gyro_y (channels 4-5) are OU — their mean should be near 0."""
     gen = _make_gen(anomaly_ratio=0.0, n_timesteps=2000, seed=2)
-    telemetry, _ = gen.generate()
+    telemetry, _ = gen.generate(n_series=1)
+    series = telemetry[0]
     for ch in [4, 5]:
-        mean = float(telemetry[:, ch].mean())
+        mean = float(series[:, ch].mean())
         assert abs(mean) < 0.2, f"Channel {ch} mean = {mean:.3f}, expected near 0"
 
 
 def test_anomaly_spike_exceeds_5sigma() -> None:
     """Spike anomalies must be ≥5σ above the channel's own std."""
     gen = _make_gen(anomaly_ratio=0.2, anomaly_types=["spike"], seed=3)
-    telemetry, labels = gen.generate()
-    gen_std = gen._channel_std  # set after generate()
+    telemetry, labels = gen.generate(n_series=1)
+    gen_std = gen._channel_std
 
-    normal = telemetry[labels == 0]
+    series = telemetry[0]
+    series_labels = labels[0]
+    normal = series[series_labels == 0]
     channel_mean = normal.mean(dim=0).numpy()
 
-    anom_idx = (labels == 1).nonzero(as_tuple=True)[0]
+    anom_idx = (series_labels == ANOMALY_TYPE_IDS["spike"]).nonzero(as_tuple=True)[0]
     for t in anom_idx[:10]:
-        row = telemetry[t].numpy()
+        row = series[t].numpy()
         max_z = float(np.max(np.abs(row - channel_mean) / gen_std))
         assert max_z >= 3.0, f"Spike at t={t} had max z={max_z:.2f}, expected ≥3σ"
 
@@ -116,13 +138,15 @@ def test_step_anomaly_magnitude_vs_channel_std() -> None:
     gen = _make_gen(n_timesteps=2000, anomaly_ratio=0.15,
                     anomaly_types=["step"], seed=4,
                     anomaly_min_duration=15, anomaly_max_duration=15)
-    telemetry, labels = gen.generate()
+    telemetry, labels = gen.generate(n_series=1)
     gen_std = gen._channel_std
 
-    normal = telemetry[labels == 0]
+    series = telemetry[0]
+    series_labels = labels[0]
+    normal = series[series_labels == 0]
     channel_mean = normal.mean(dim=0).numpy()
 
-    anom_rows = telemetry[labels == 1].numpy()
+    anom_rows = series[series_labels == ANOMALY_TYPE_IDS["step"]].numpy()
     max_z_per_anomaly = np.max(
         np.abs(anom_rows - channel_mean[np.newaxis, :]) / gen_std[np.newaxis, :],
         axis=1,
@@ -137,10 +161,14 @@ def test_correlation_break_preserves_amplitude() -> None:
     so a univariate z-score detector cannot trivially flag it."""
     gen = _make_gen(n_timesteps=2000, anomaly_ratio=0.15,
                     anomaly_types=["correlation_break"], seed=5)
-    telemetry, labels = gen.generate()
+    telemetry, labels = gen.generate(n_series=1)
 
-    normal_std = float(telemetry[labels == 0, 1].std())
-    anomaly_std = float(telemetry[labels == 1, 1].std())
+    series = telemetry[0]
+    series_labels = labels[0]
+    corr_break_id = ANOMALY_TYPE_IDS["correlation_break"]
+
+    normal_std = float(series[series_labels == 0, 1].std())
+    anomaly_std = float(series[series_labels == corr_break_id, 1].std())
     ratio = anomaly_std / (normal_std + 1e-9)
     assert 0.3 < ratio < 3.0, (
         f"correlation_break changed channel-1 amplitude too much "

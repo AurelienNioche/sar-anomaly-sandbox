@@ -4,7 +4,7 @@ These tests exist to catch 'connect-the-dots' failures that only show up
 when running the dashboard:
 
 1. Config drift  — dashboard GEN_DEFAULTS diverge from configs/data/telemetry.yaml
-2. Stale data    — old runs in data/telemetry/ silently override dashboard output
+2. Stale data    — old runs in data/synthetic/telemetry/ silently override dashboard output
 3. Generate→Save→Load roundtrip — data produced by the dashboard Generator tab
    must survive save_run / load_tensors_from_dir intact
 4. Channel properties — data generated with dashboard defaults must have the
@@ -47,12 +47,13 @@ def test_gen_defaults_match_yaml() -> None:
     """
     yaml = load_config(YAML_PATH)
     mapping = {
-        "tel_n_channels":   ("n_channels",          int),
-        "tel_n_timesteps":  ("n_timesteps",          int),
-        "tel_noise_std":    ("noise_std",            float),
-        "tel_orbital_period": ("orbital_period_steps", int),
-        "tel_anomaly_ratio": ("anomaly_ratio",       float),
-        "tel_seed":         ("seed",                 int),
+        "tel_n_series":       ("n_series",             int),
+        "tel_n_channels":     ("n_channels",            int),
+        "tel_n_timesteps":    ("n_timesteps",            int),
+        "tel_noise_std":      ("noise_std",              float),
+        "tel_orbital_period": ("orbital_period_steps",   int),
+        "tel_anomaly_ratio":  ("anomaly_ratio",          float),
+        "tel_seed":           ("seed",                   int),
     }
     for dash_key, (yaml_key, cast) in mapping.items():
         dash_val = cast(GEN_DEFAULTS[dash_key])
@@ -68,7 +69,7 @@ def test_gen_defaults_match_yaml() -> None:
 # ---------------------------------------------------------------------------
 
 def test_no_stale_data_in_telemetry_dir() -> None:
-    """data/telemetry/ must not contain any pre-committed run directories.
+    """data/synthetic/telemetry/ must not contain any pre-committed run directories.
 
     Saved runs are user-local artefacts; committing them silently overrides
     everyone else's dashboard with old (possibly wrong) data on first load.
@@ -90,11 +91,16 @@ def test_no_stale_data_in_telemetry_dir() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Generate → Save → Load roundtrip (mirrors dashboard Generator tab)
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _gen_from_defaults() -> tuple[torch.Tensor, torch.Tensor]:
-    """Reproduce what the dashboard does when the user clicks Generate."""
+    """Reproduce what the dashboard does when the user clicks Generate.
+
+    Returns:
+        telemetry : (N, T, C)
+        labels    : (N, T) multi-class — 0=normal, 1-4=anomaly type
+    """
     cfg = TelemetryGeneratorConfig(
         n_channels=GEN_DEFAULTS["tel_n_channels"],
         n_timesteps=GEN_DEFAULTS["tel_n_timesteps"],
@@ -103,8 +109,19 @@ def _gen_from_defaults() -> tuple[torch.Tensor, torch.Tensor]:
         anomaly_ratio=GEN_DEFAULTS["tel_anomaly_ratio"],
         seed=GEN_DEFAULTS["tel_seed"],
     )
-    return TelemetryGenerator(cfg).generate()
+    return TelemetryGenerator(cfg).generate(n_series=GEN_DEFAULTS["tel_n_series"])
 
+
+def _first_series(
+    telemetry: torch.Tensor, labels: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the first series with binary labels for single-series assertions."""
+    return telemetry[0], (labels[0] > 0).long()
+
+
+# ---------------------------------------------------------------------------
+# 3. Generate → Save → Load roundtrip (mirrors dashboard Generator tab)
+# ---------------------------------------------------------------------------
 
 def test_generate_save_load_roundtrip() -> None:
     """Data from the Generator tab must survive save_run / load_tensors_from_dir."""
@@ -156,9 +173,10 @@ def test_load_prefers_latest_subdir() -> None:
 def test_dashboard_data_has_sinusoidal_channels() -> None:
     """Channels 0-3 must be clearly periodic (high autocorrelation at orbital lag)."""
     telemetry, labels = _gen_from_defaults()
-    normal = telemetry[labels == 0].numpy()
+    series, bin_labels = _first_series(telemetry, labels)
+    normal = series[bin_labels == 0].numpy()
     orbital_lag = GEN_DEFAULTS["tel_orbital_period"]
-    for ch in range(min(4, telemetry.shape[1])):
+    for ch in range(min(4, series.shape[1])):
         x = normal[:, ch]
         if len(x) <= orbital_lag:
             continue
@@ -172,9 +190,10 @@ def test_dashboard_data_has_sinusoidal_channels() -> None:
 def test_dashboard_data_ou_channels_not_sinusoidal() -> None:
     """Channels 4-5 (OU) must NOT be periodic — autocorrelation at orbital lag ≈ 0."""
     telemetry, labels = _gen_from_defaults()
-    if telemetry.shape[1] < 6:
+    series, bin_labels = _first_series(telemetry, labels)
+    if series.shape[1] < 6:
         return
-    normal = telemetry[labels == 0].numpy()
+    normal = series[bin_labels == 0].numpy()
     orbital_lag = GEN_DEFAULTS["tel_orbital_period"]
     for ch in [4, 5]:
         x = normal[:, ch]
@@ -190,7 +209,7 @@ def test_dashboard_data_ou_channels_not_sinusoidal() -> None:
 def test_dashboard_data_has_anomalies() -> None:
     """Generated data must contain at least some anomalies."""
     _, labels = _gen_from_defaults()
-    n_anom = int(labels.sum().item())
+    n_anom = int((labels > 0).sum().item())
     assert n_anom > 0, "No anomalies in default dashboard data — check anomaly_ratio"
 
 
@@ -201,9 +220,11 @@ def test_dashboard_data_has_anomalies() -> None:
 def _make_train_test(
     telemetry: torch.Tensor, labels: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    normal = telemetry[labels == 0]
+    """Use first series for a single-series train/test plumbing check."""
+    series, bin_labels = _first_series(telemetry, labels)
+    normal = series[bin_labels == 0]
     n_train = max(1, len(normal) // 2)
-    return normal[:n_train], telemetry, labels
+    return normal[:n_train], series, bin_labels
 
 
 def _check_detector(det, telemetry, labels, min_auc: float = 0.5) -> None:
@@ -310,10 +331,11 @@ def test_visualize_channel_stats_normal_vs_anomaly() -> None:
     and anomalous timesteps — a basic sanity check that anomalies are visible
     in the statistics table."""
     telemetry, labels = _gen_from_defaults()
-    assert labels.sum().item() > 0, "Need anomalies for this test"
+    series, bin_labels = _first_series(telemetry, labels)
+    assert bin_labels.sum().item() > 0, "Need anomalies for this test"
 
-    normal = telemetry[labels == 0]
-    anomalous = telemetry[labels == 1]
+    normal = series[bin_labels == 0]
+    anomalous = series[bin_labels == 1]
 
     diffs = (anomalous.mean(dim=0) - normal.mean(dim=0)).abs()
     max_diff = float(diffs.max())
@@ -326,8 +348,9 @@ def test_visualize_channel_stats_normal_vs_anomaly() -> None:
 def test_visualize_channel_stats_shape() -> None:
     """The stats table must have one row per channel."""
     telemetry, labels = _gen_from_defaults()
-    normal = telemetry[labels == 0]
-    n_c = telemetry.shape[1]
+    series, bin_labels = _first_series(telemetry, labels)
+    normal = series[bin_labels == 0]
+    n_c = series.shape[1]
 
     from src.data.generators.telemetry import CHANNEL_NAMES
     rows = []

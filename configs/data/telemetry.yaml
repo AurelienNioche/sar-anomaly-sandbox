@@ -1,3 +1,4 @@
+n_series: 20
 n_channels: 7
 n_timesteps: 1000
 sampling_hz: 1.0
