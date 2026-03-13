@@ -363,3 +363,177 @@ def test_visualize_channel_stats_shape() -> None:
 
     assert len(rows) == n_c, f"Expected {n_c} rows, got {len(rows)}"
     assert all(r["Normal std"] > 0 for r in rows), "All channels must have positive std"
+
+
+# ---------------------------------------------------------------------------
+# 7. _ensure_3d backward compat — legacy (T,C) runs must not crash
+# ---------------------------------------------------------------------------
+
+def test_ensure_3d_promotes_legacy_tensors() -> None:
+    """_ensure_3d must promote (T,C)/(T,) tensors to (1,T,C)/(1,T) without error."""
+    from src.visualization.telemetry_dashboard import _ensure_3d
+    t_2d = torch.randn(500, 7)
+    l_1d = torch.zeros(500, dtype=torch.long)
+    t_out, l_out = _ensure_3d(t_2d, l_1d)
+    assert t_out.shape == (1, 500, 7)
+    assert l_out.shape == (1, 500)
+
+
+def test_ensure_3d_leaves_3d_unchanged() -> None:
+    """_ensure_3d must not modify tensors that are already (N,T,C)/(N,T)."""
+    from src.visualization.telemetry_dashboard import _ensure_3d
+    t_3d = torch.randn(5, 500, 7)
+    l_2d = torch.zeros(5, 500, dtype=torch.long)
+    t_out, l_out = _ensure_3d(t_3d, l_2d)
+    assert t_out.shape == (5, 500, 7)
+    assert l_out.shape == (5, 500)
+
+
+# ---------------------------------------------------------------------------
+# 8. _series_slider — must not crash when n=1
+# ---------------------------------------------------------------------------
+
+def test_series_slider_returns_zero_for_single_series() -> None:
+    """When n=1 the slider must be skipped and 0 returned without raising."""
+    from unittest.mock import patch
+
+    from src.visualization.telemetry_dashboard import _series_slider
+    with patch("streamlit.slider") as mock_slider:
+        result = _series_slider("Series index", 1, key="test_key")
+    assert result == 0
+    mock_slider.assert_not_called()
+
+
+def test_series_slider_renders_for_multiple_series() -> None:
+    """When n>1 the slider must be called with valid min < max."""
+    from unittest.mock import patch
+
+    from src.visualization.telemetry_dashboard import _series_slider
+    with patch("streamlit.slider", return_value=0) as mock_slider:
+        _series_slider("Series index", 5, key="test_key")
+    mock_slider.assert_called_once()
+    call_args = mock_slider.call_args
+    min_val = call_args.args[1]
+    max_val = call_args.args[2]
+    assert min_val < max_val, f"slider min={min_val} >= max={max_val}"
+
+
+# ---------------------------------------------------------------------------
+# 9. _train_test_split — determinism and shape contract
+# ---------------------------------------------------------------------------
+
+def test_train_test_split_shapes() -> None:
+    """_train_test_split must return train (K*T, C) and valid index lists."""
+    from src.visualization.telemetry_dashboard import _train_test_split
+    telemetry = torch.randn(10, 200, 7)
+    train_data, train_idx, test_idx = _train_test_split(telemetry, train_frac=0.6)
+    assert train_data.shape[1] == 7
+    assert train_data.shape[0] == len(train_idx) * 200
+    assert len(train_idx) + len(test_idx) == 10
+    assert set(train_idx) & set(test_idx) == set(), "Train and test indices must not overlap"
+
+
+def test_train_test_split_is_reproducible() -> None:
+    """Same seed must produce the same split."""
+    from src.visualization.telemetry_dashboard import _train_test_split
+    telemetry = torch.randn(10, 200, 7)
+    _, idx1, _ = _train_test_split(telemetry, 0.5, seed=0)
+    _, idx2, _ = _train_test_split(telemetry, 0.5, seed=0)
+    assert idx1 == idx2
+
+
+def test_train_test_split_different_seeds_differ() -> None:
+    """Different seeds must (almost certainly) produce different splits."""
+    from src.visualization.telemetry_dashboard import _train_test_split
+    telemetry = torch.randn(20, 200, 7)
+    _, idx0, _ = _train_test_split(telemetry, 0.5, seed=0)
+    _, idx1, _ = _train_test_split(telemetry, 0.5, seed=1)
+    assert idx0 != idx1, "Different seeds should produce different train/test splits"
+
+
+def test_train_test_split_single_series_does_not_crash() -> None:
+    """A dataset of N=1 must not crash the split (train=test=series 0)."""
+    from src.visualization.telemetry_dashboard import _train_test_split
+    telemetry = torch.randn(1, 200, 7)
+    train_data, train_idx, test_idx = _train_test_split(telemetry, 0.5)
+    assert train_data.shape == (200, 7)
+    assert len(train_idx) == 1
+    assert len(test_idx) == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. _detector_results_section inputs — per-type table must not crash
+# ---------------------------------------------------------------------------
+
+def test_per_type_auc_table_does_not_crash_with_missing_types() -> None:
+    """If some anomaly types are absent from the scored data, the per-type table
+    must silently skip them rather than raising KeyError or division-by-zero."""
+    from sklearn.metrics import roc_auc_score as _auc
+
+    from src.data.generators.telemetry import ANOMALY_TYPE_IDS
+
+    n_t = 300
+    labels_mc = torch.zeros(n_t, dtype=torch.long)
+    labels_mc[50:60] = ANOMALY_TYPE_IDS["spike"]
+    scores = torch.rand(n_t)
+
+    labels_np = labels_mc.numpy()
+    y_score = scores.numpy()
+    type_rows = []
+    for type_id in sorted(ANOMALY_TYPE_IDS.values()):
+        mask_relevant = (labels_np == 0) | (labels_np == type_id)
+        if (labels_np == type_id).sum() == 0:
+            continue
+        y_rel = (labels_np[mask_relevant] == type_id).astype(int)
+        s_rel = y_score[mask_relevant]
+        try:
+            auc_t = _auc(y_rel, s_rel)
+        except ValueError:
+            auc_t = float("nan")
+        type_rows.append({"type_id": type_id, "auc": auc_t})
+    assert len(type_rows) == 1, f"Expected 1 type row (spike only), got {len(type_rows)}"
+    assert type_rows[0]["type_id"] == ANOMALY_TYPE_IDS["spike"]
+
+
+# ---------------------------------------------------------------------------
+# 11. End-to-end detector tab logic (no Streamlit, uses dashboard helpers)
+# ---------------------------------------------------------------------------
+
+def test_detector_tab_logic_n1_does_not_crash() -> None:
+    """The full detector tab logic (split → fit → score) must work with N=1.
+    This is the exact sequence that was crashing when a legacy run was loaded."""
+    from src.models.baselines import MahalanobisDetector
+    from src.visualization.telemetry_dashboard import _series_slider, _train_test_split
+
+    cfg = TelemetryGeneratorConfig(n_channels=4, n_timesteps=300, seed=7,
+                                   anomaly_ratio=0.05)
+    telemetry, labels_mc = TelemetryGenerator(cfg).generate(n_series=1)
+
+    train_data, train_idx, test_idx = _train_test_split(telemetry, 0.5)
+    det = MahalanobisDetector(window=10).fit(train_data)
+    n_t, n_c = telemetry.shape[1], telemetry.shape[2]
+    test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
+    scores = det.score(test_tel)
+    assert scores.shape == (len(test_idx) * n_t,)
+
+    m = len(test_idx)
+    series_idx = _series_slider("idx", m, key="dummy")
+    assert series_idx == 0
+
+
+def test_detector_tab_logic_n20_does_not_crash() -> None:
+    """The full detector tab logic must work with N=20 (normal multi-series case)."""
+    from src.models.baselines import PerChannelZScore
+    from src.visualization.telemetry_dashboard import _train_test_split
+
+    cfg = TelemetryGeneratorConfig(n_channels=4, n_timesteps=200, seed=8,
+                                   anomaly_ratio=0.05)
+    telemetry, labels_mc = TelemetryGenerator(cfg).generate(n_series=20)
+
+    train_data, train_idx, test_idx = _train_test_split(telemetry, 0.5)
+    det = PerChannelZScore(window=10).fit(train_data)
+    n_t, n_c = telemetry.shape[1], telemetry.shape[2]
+    test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
+    scores = det.score(test_tel)
+    assert scores.shape == (len(test_idx) * n_t,)
+    assert len(train_idx) + len(test_idx) == 20

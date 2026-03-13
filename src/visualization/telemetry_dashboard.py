@@ -69,6 +69,13 @@ def _run_selectbox(tab_key: str) -> Path | None:
     return runs[options.index(selected)]
 
 
+def _series_slider(label: str, n: int, key: str) -> int:
+    """Return a series index slider, or 0 silently when there is only one series."""
+    if n <= 1:
+        return 0
+    return st.slider(label, 0, n - 1, 0, key=key)
+
+
 def _ensure_3d(
     telemetry: torch.Tensor, labels: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -343,7 +350,7 @@ def _detector_results_section(
 
     st.subheader("Time Series with Anomaly Overlay")
     m = test_tel.shape[0]
-    series_idx = st.slider("Test series index", 0, m - 1, 0, key=f"{tab_key}_series_idx")
+    series_idx = _series_slider("Test series index", m, key=f"{tab_key}_series_idx")
     n_t = test_tel.shape[1]
     series_scores = scores[series_idx * n_t : (series_idx + 1) * n_t]
     _plot_timeseries(
@@ -426,9 +433,7 @@ def tab_generator() -> None:
             telemetry = st.session_state["tel_telemetry"]
             labels_mc = st.session_state["tel_labels_mc"]
             n = telemetry.shape[0]
-            series_idx = st.slider(
-                "Preview series", 0, n - 1, 0, key="tel_gen_series_idx"
-            )
+            series_idx = _series_slider("Preview series", n, key="tel_gen_series_idx")
             _plot_timeseries(
                 telemetry[series_idx],
                 labels_mc[series_idx],
@@ -485,7 +490,7 @@ def tab_visualize() -> None:
             + "  |  ".join(f"{k}: {v}" for k, v in type_counts.items())
         )
 
-    series_idx = st.slider("Series index", 0, n - 1, 0, key="tel_viz_series_idx")
+    series_idx = _series_slider("Series index", n, key="tel_viz_series_idx")
     series = telemetry[series_idx]
     series_labels = labels_mc[series_idx]
     names = CHANNEL_NAMES[:n_c]
