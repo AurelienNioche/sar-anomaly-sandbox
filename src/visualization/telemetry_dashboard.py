@@ -69,6 +69,26 @@ def _run_selectbox(tab_key: str) -> Path | None:
     return runs[options.index(selected)]
 
 
+def _ensure_3d(
+    telemetry: torch.Tensor, labels: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Upgrade legacy (T, C) / (T,) tensors to (1, T, C) / (1, T).
+
+    Old runs were saved in the pre-N-series format. Rather than crashing, we
+    silently promote them so the dashboard still works; a banner tells the user
+    to regenerate for full multi-series functionality.
+    """
+    if telemetry.dim() == 2:
+        st.warning(
+            "This run was saved in the old single-series format `(T, C)`. "
+            "It will be treated as a dataset of N=1 series. "
+            "**Click Generate to create a fresh multi-series run.**"
+        )
+        telemetry = telemetry.unsqueeze(0)
+        labels = labels.unsqueeze(0)
+    return telemetry, labels
+
+
 def _load_data(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
     """Load a saved run. Returns (telemetry (N,T,C), labels (N,T) multi-class)."""
     run_path = _run_selectbox(tab_key)
@@ -76,7 +96,7 @@ def _load_data(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
         return None
     st.caption(f"Loaded `{run_path}`")
     tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
-    return tensors[0], tensors[1]
+    return _ensure_3d(tensors[0], tensors[1])
 
 
 def _plot_timeseries(
@@ -434,7 +454,7 @@ def tab_visualize() -> None:
         resolved = str(run_path)
         st.caption(f"Loaded `{resolved}`")
         tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
-        telemetry, labels_mc = tensors[0], tensors[1]
+        telemetry, labels_mc = _ensure_3d(tensors[0], tensors[1])
         if st.session_state.get("tel_viz_last_synced") != resolved:
             for suffix in ("stat", "ml", "deep", "cmp"):
                 st.session_state[f"tel_{suffix}_dir"] = resolved
