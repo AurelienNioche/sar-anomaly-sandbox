@@ -25,8 +25,8 @@ from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZ
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
 from src.models.deep import LSTMAutoencoderDetector
 from src.utils.config import load_config
-from src.visualization.dashboards.data_io import load_tensors_from_dir, save_run
-from src.visualization.dashboards.telemetry_dashboard import (
+from src.visualization.data_io import load_tensors_from_dir, save_run
+from src.visualization.telemetry_dashboard import (
     DEFAULT_DATA_DIR,
     GEN_DEFAULTS,
 )
@@ -77,7 +77,7 @@ def test_no_stale_data_in_telemetry_dir() -> None:
     result = subprocess.run(
         ["git", "ls-files", "--error-unmatch", DEFAULT_DATA_DIR],
         capture_output=True, text=True,
-        cwd=Path(DEFAULT_DATA_DIR).parent.parent,
+        cwd=Path(DEFAULT_DATA_DIR).parent.parent.parent,
     )
     tracked = [
         line for line in result.stdout.splitlines()
@@ -247,7 +247,7 @@ def test_visualize_tab_is_registered() -> None:
     and Statistical."""
     import re
     src = (Path(__file__).parent.parent /
-           "src/visualization/dashboards/telemetry_dashboard.py").read_text()
+           "src/visualization/telemetry_dashboard.py").read_text()
     match = re.search(r'st\.tabs\(\[(.*?)\]\)', src, re.DOTALL)
     assert match, "Could not find st.tabs([...]) call in telemetry_dashboard.py"
     tab_str = match.group(1)

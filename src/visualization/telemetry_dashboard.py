@@ -16,7 +16,7 @@ from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZ
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
 from src.models.deep import LSTMAutoencoderDetector
 from src.utils.metrics import best_f1_threshold as _best_f1_threshold
-from src.visualization.dashboards.data_io import (
+from src.visualization.data_io import (
     list_runs,
     load_tensor,
     save_run,
@@ -24,7 +24,7 @@ from src.visualization.dashboards.data_io import (
 
 st.set_page_config(page_title="Telemetry Anomaly Sandbox", layout="wide")
 
-DEFAULT_DATA_DIR = "data/telemetry"
+DEFAULT_DATA_DIR = "data/synthetic/telemetry"
 _FILENAMES = ("telemetry.pt", "labels.pt")
 
 GEN_DEFAULTS: dict = {

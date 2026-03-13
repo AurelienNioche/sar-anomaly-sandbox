@@ -106,7 +106,7 @@ def test_ml_pipeline_auc() -> None:
 def test_data_io_roundtrip() -> None:
     import tempfile
 
-    from src.visualization.dashboards.data_io import load_tensors_from_dir, save_run
+    from src.visualization.data_io import load_tensors_from_dir, save_run
     telemetry, labels = _generate()
     with tempfile.TemporaryDirectory() as tmp:
         save_run({"telemetry.pt": telemetry, "labels.pt": labels}, base_dir=tmp)

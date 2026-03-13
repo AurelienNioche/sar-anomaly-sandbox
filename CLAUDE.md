@@ -32,13 +32,13 @@ src/
     seed.py         # set_seed(seed)
   experiments/
     run_generate.py   # CLI: generate and save SAR data
-  visualization/dashboards/
+  visualization/
     data_io.py              # Shared I/O: save_run, load_tensors_from_dir, list_runs
     sar_dashboard.py        # Streamlit app — SAR
     telemetry_dashboard.py  # Streamlit app — Telemetry
 ```
 
-Generated data lands in `data/synthetic/` (SAR) and `data/telemetry/` (telemetry) as timestamped sub-folders containing `.pt` files. These are **not** committed to the repository.
+Generated data lands in `data/synthetic/sar/` (SAR) and `data/synthetic/telemetry/` (telemetry) as timestamped sub-folders containing `.pt` files. These are **not** committed to the repository.
 
 ---
 
@@ -112,7 +112,7 @@ pytest tests/test_detector_properties.py -v
 
 **Dashboard data flow**:
 ```
-Generator tab  →  save_run()  →  data/telemetry/<timestamp>/
+Generator tab  →  save_run()  →  data/synthetic/telemetry/<timestamp>/
 Visualize tab  →  list_runs() → selectbox → session_state sync
 Detector tabs  ←  list_runs() → selectbox → load tensors
 ```
@@ -129,8 +129,8 @@ All tabs share a `list_runs(base_dir, filenames)` helper from `data_io.py` that 
 Both dashboards are single-file Streamlit apps. They are launched with:
 
 ```bash
-streamlit run src/visualization/dashboards/telemetry_dashboard.py
-streamlit run src/visualization/dashboards/sar_dashboard.py
+streamlit run src/visualization/telemetry_dashboard.py
+streamlit run src/visualization/sar_dashboard.py
 ```
 
 Streamlit caches Python module imports at the process level. After editing an imported module (e.g., a detector), restart the Streamlit server — a browser hard-refresh is not sufficient.
@@ -144,4 +144,4 @@ Session state keys follow the pattern `tel_{tab_key}_{thing}` (e.g., `tel_stat_s
 - **Calling `_inject_*` before `generate()`**: `_channel_std` is `None` until `_make_baseline()` runs inside `generate()`. Each injector guards against this with an explicit `RuntimeError`.
 - **`fill_between` with stale ylim**: `ax.get_ylim()` read immediately after `ax.plot()` may not reflect `tight_layout()` adjustments. Use `ax.axvspan(start, end, ...)` per anomaly region instead.
 - **`_INJECTORS` dict bypasses subclass dispatch**: Use `getattr(self, f"_inject_{atype}")` to allow subclass overrides.
-- **Committed `.pt` files**: `test_no_stale_data_in_telemetry_dir` checks `git ls-files` to ensure run artifacts are not committed. The equivalent check for `data/synthetic/` is not yet automated — avoid `git add data/`.
+- **Committed `.pt` files**: `test_no_stale_data_in_telemetry_dir` checks `git ls-files` to ensure run artifacts are not committed. The equivalent check for `data/synthetic/sar/` is not yet automated — avoid `git add data/`.

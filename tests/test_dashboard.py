@@ -7,7 +7,7 @@ import torch
 from sklearn.metrics import f1_score, precision_score, recall_score
 
 from src.models.baselines import RXDetector
-from src.visualization.dashboards.sar_dashboard import (
+from src.visualization.sar_dashboard import (
     LABEL_NAMES,
     load_patches_labels_from_dir,
     outcome_label,

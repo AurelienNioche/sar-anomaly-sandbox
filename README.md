@@ -28,7 +28,7 @@ pre-commit install
 │   │   └── deep/          # LSTMAutoencoderDetector
 │   ├── experiments/       # run_generate CLI
 │   ├── utils/             # config loader, seed
-│   └── visualization/dashboards/  # sar_dashboard.py, telemetry_dashboard.py
+│   └── visualization/  # sar_dashboard.py, telemetry_dashboard.py
 └── tests/
 ```
 
@@ -37,13 +37,13 @@ pre-commit install
 **SAR imagery** — speckle generator + RX detector:
 
 ```bash
-streamlit run src/visualization/dashboards/sar_dashboard.py
+streamlit run src/visualization/sar_dashboard.py
 ```
 
 **Satellite telemetry** — multivariate time series + 5 anomaly detectors:
 
 ```bash
-streamlit run src/visualization/dashboards/telemetry_dashboard.py
+streamlit run src/visualization/telemetry_dashboard.py
 ```
 
 ### Telemetry dashboard tabs

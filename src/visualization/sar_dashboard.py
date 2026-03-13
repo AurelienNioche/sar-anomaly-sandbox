@@ -10,12 +10,12 @@ from src.data.generators import SpeckleSARGenerator
 from src.data.generators.speckle import SpeckleSARGeneratorConfig
 from src.models.baselines import RXDetector
 from src.utils.metrics import best_f1_threshold as _best_f1_threshold
-from src.visualization.dashboards.data_io import (
+from src.visualization.data_io import (
     list_runs,
     load_tensor,
     load_tensors_from_dir,
 )
-from src.visualization.dashboards.data_io import (
+from src.visualization.data_io import (
     save_run as _save_run,
 )
 
@@ -102,7 +102,7 @@ def render_patch_grid_with_outcomes(
     plt.close()
 
 
-DEFAULT_DATA_DIR = "data/synthetic"
+DEFAULT_DATA_DIR = "data/synthetic/sar"
 
 _FILENAMES = ("patches.pt", "labels.pt")
 
@@ -140,7 +140,7 @@ def data_source_widget(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None
 def save_run(
     patches: torch.Tensor,
     labels: torch.Tensor,
-    base_dir: str = "data/synthetic",
+    base_dir: str = "data/synthetic/sar",
 ) -> Path:
     """Save patches and labels to a timestamped sub-folder of *base_dir*."""
     return _save_run({"patches.pt": patches, "labels.pt": labels}, base_dir)

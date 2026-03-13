@@ -42,13 +42,11 @@ env/
 checkpoints/
 
 # Data (large files)
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-data/synthetic/*
-!data/synthetic/.gitkeep
-!data/synthetic/README.md
+data/synthetic/sar/*
+!data/synthetic/sar/.gitkeep
+!data/synthetic/sar/README.md
+data/synthetic/telemetry/*
+!data/synthetic/telemetry/.gitkeep
 
 # Jupyter
 .ipynb_checkpoints/

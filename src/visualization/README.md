@@ -7,7 +7,7 @@ Interactive Streamlit app for experimenting with the synthetic SAR generator and
 ### Run
 
 ```bash
-streamlit run src/visualization/dashboards/sar_dashboard.py
+streamlit run src/visualization/sar_dashboard.py
 ```
 
 ### Tabs
