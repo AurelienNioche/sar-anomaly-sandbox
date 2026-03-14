@@ -56,8 +56,11 @@ def _sidebar_run_selector() -> None:
     """Sidebar widget: pick the active dataset used by all tabs.
 
     Stores the selected run Path in ``st.session_state["tel_active_run"]``.
-    When the Generator tab saves a new run it sets this key directly so that
-    all other tabs immediately switch to the fresh data.
+    When the Generator tab saves a new run it sets ``tel_active_run`` to the
+    new path and calls ``st.rerun()``. On that rerun this function pre-syncs
+    the selectbox widget key (``tel_active_run_select``) to the new run name
+    *before* ``st.selectbox`` is called — the only moment we're allowed to
+    write to a widget-backed key without raising a StreamlitAPIException.
     """
     with st.sidebar:
         st.header("Active Dataset")
@@ -80,12 +83,18 @@ def _sidebar_run_selector() -> None:
             active_name = Path(active).name
         else:
             active_name = None
-        default_idx = options.index(active_name) if active_name in options else 0
+
+        # Pre-sync the selectbox key to tel_active_run BEFORE rendering the
+        # widget — this is the only way to programmatically update a selectbox
+        # without raising "cannot be modified after the widget is instantiated".
+        if active_name in options:
+            st.session_state["tel_active_run_select"] = active_name
+        elif "tel_active_run_select" not in st.session_state:
+            st.session_state["tel_active_run_select"] = options[0]
 
         selected = st.selectbox(
             "Run",
             options,
-            index=default_idx,
             key="tel_active_run_select",
             help="Newest first. All tabs use this run.",
         )
@@ -459,9 +468,16 @@ def tab_generator() -> None:
                 {"telemetry.pt": telemetry, "labels.pt": labels_mc},
                 base_dir=DEFAULT_DATA_DIR,
             )
+            # Set the active run and immediately rerun so _sidebar_run_selector
+            # can pre-sync tel_active_run_select before rendering the selectbox.
             st.session_state["tel_active_run"] = saved
+            st.session_state["tel_last_saved"] = str(saved)
+            st.rerun()
+
+        if st.session_state.get("tel_last_saved"):
             st.success(
-                f"Saved to `{saved}` — sidebar updated, all tabs now use this run."
+                f"Saved to `{st.session_state['tel_last_saved']}` — "
+                "sidebar updated, all tabs now use this run."
             )
 
     with col2:

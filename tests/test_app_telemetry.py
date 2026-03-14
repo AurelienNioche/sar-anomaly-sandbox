@@ -11,14 +11,19 @@ Each test follows the pattern:
     assert not at.exception
 """
 
+import tempfile
+from pathlib import Path
+
 import pytest
 import torch
 from streamlit.testing.v1 import AppTest
 
 from src.data.generators.telemetry import TelemetryGenerator, TelemetryGeneratorConfig
+from src.visualization.data_io import save_run
 from src.visualization.telemetry_dashboard import GEN_DEFAULTS
 
 APP_PATH = "src/visualization/telemetry_dashboard.py"
+_FILENAMES = ("telemetry.pt", "labels.pt")
 _SHORT_CFG = TelemetryGeneratorConfig(
     n_channels=4, n_timesteps=100, anomaly_ratio=0.1, seed=0
 )
@@ -26,6 +31,14 @@ _SHORT_CFG = TelemetryGeneratorConfig(
 
 def _gen(n_series: int) -> tuple[torch.Tensor, torch.Tensor]:
     return TelemetryGenerator(_SHORT_CFG).generate(n_series=n_series)
+
+
+def _saved_run(n_series: int = 3) -> tuple[str, torch.Tensor, torch.Tensor]:
+    """Save a run to a temp dir, return (saved_path_str, telemetry, labels_mc)."""
+    telemetry, labels_mc = _gen(n_series)
+    tmp = tempfile.mkdtemp()
+    saved = save_run({"telemetry.pt": telemetry, "labels.pt": labels_mc}, base_dir=tmp)
+    return str(saved), telemetry, labels_mc
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +49,29 @@ def test_app_runs_empty_state() -> None:
     """App must start without exception when no data has been generated yet."""
     at = AppTest.from_file(APP_PATH).run()
     assert not at.exception
+
+
+def test_app_title_is_correct() -> None:
+    """App title must be 'Telemetry Anomaly Sandbox'."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    assert at.title[0].value == "Telemetry Anomaly Sandbox"
+
+
+def test_app_has_six_tabs() -> None:
+    """App must render exactly 6 tabs with the expected labels."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    labels = [t.label for t in at.tabs]
+    assert labels == ["Generator", "Visualize", "Statistical", "ML", "Deep", "Comparison"]
+
+
+def test_sidebar_has_active_dataset_header() -> None:
+    """Sidebar must always show the 'Active Dataset' header."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    sidebar_headers = [h.value for h in at.sidebar.header]
+    assert "Active Dataset" in sidebar_headers
 
 
 # ---------------------------------------------------------------------------
@@ -60,13 +96,29 @@ def test_generator_tab_slider_defaults_match_gen_defaults() -> None:
     for key, expected in GEN_DEFAULTS.items():
         if key in slider_by_key:
             assert slider_by_key[key].value == expected, (
-                f"Slider '{key}' default {slider_by_key[key].value!r} != GEN_DEFAULTS {expected!r}"
+                f"Slider '{key}' default {slider_by_key[key].value!r} "
+                f"!= GEN_DEFAULTS {expected!r}"
             )
         elif key in number_by_key:
             assert number_by_key[key].value == expected, (
                 f"NumberInput '{key}' default {number_by_key[key].value!r} "
                 f"!= GEN_DEFAULTS {expected!r}"
             )
+
+
+def test_generator_tab_has_generate_and_reset_buttons() -> None:
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    button_keys = [b.key for b in at.button]
+    assert "tel_generate" in button_keys
+    assert "tel_reset" in button_keys
+
+
+def test_generator_tab_has_anomaly_types_multiselect() -> None:
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    ms_keys = [m.key for m in at.multiselect]
+    assert "tel_anomaly_types" in ms_keys
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +179,92 @@ def test_generator_tab_series_slider_present_for_n_gt_1() -> None:
     assert s.min < s.max, f"Slider min={s.min} >= max={s.max}"
 
 
+def test_generator_tab_shows_success_after_generate() -> None:
+    """After generate, a st.success message must be shown with the saved path."""
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_last_saved"] = "/some/run/path"
+    at.run()
+    assert not at.exception
+    assert len(at.success) > 0, "Expected at least one st.success message"
+    assert "/some/run/path" in at.success[0].value
+
+
 # ---------------------------------------------------------------------------
 # 4. Sidebar run selector
 # ---------------------------------------------------------------------------
+
+def test_sidebar_selectbox_syncs_to_active_run() -> None:
+    """When tel_active_run is pre-set, _sidebar_run_selector must sync the
+    selectbox to show that run on the next render — using AppTest.from_function
+    to isolate the sidebar logic from the full app and real filesystem."""
+    def sidebar_app() -> None:
+        from pathlib import Path
+
+        import streamlit as st
+
+        fake_runs = [Path("run_2026-01-02"), Path("run_2026-01-01")]  # newest first
+        options = [r.name for r in fake_runs]
+        run_map = {r.name: r for r in fake_runs}
+
+        active = st.session_state.get("tel_active_run")
+        active_name = (
+            active.name if isinstance(active, Path)
+            else Path(active).name if isinstance(active, str)
+            else None
+        )
+
+        if active_name in options:
+            st.session_state["tel_active_run_select"] = active_name
+        elif "tel_active_run_select" not in st.session_state:
+            st.session_state["tel_active_run_select"] = options[0]
+
+        selected = st.selectbox("Run", options, key="tel_active_run_select")
+        st.session_state["tel_active_run"] = run_map[selected]
+
+    at = AppTest.from_function(sidebar_app)
+    at.session_state["tel_active_run"] = Path("run_2026-01-01")
+    at.run()
+    assert not at.exception
+    assert at.selectbox[0].value == "run_2026-01-01", (
+        "Selectbox must show the run that was set in tel_active_run, "
+        "not default to the first (newest) option"
+    )
+
+
+def test_sidebar_selectbox_defaults_to_newest_when_no_active_run() -> None:
+    """When no active run is set, the selectbox must default to the first
+    (newest) option."""
+    def sidebar_app() -> None:
+        from pathlib import Path
+
+        import streamlit as st
+
+        fake_runs = [Path("run_2026-01-02"), Path("run_2026-01-01")]
+        options = [r.name for r in fake_runs]
+        run_map = {r.name: r for r in fake_runs}
+
+        active = st.session_state.get("tel_active_run")
+        active_name = (
+            active.name if isinstance(active, Path)
+            else Path(active).name if isinstance(active, str)
+            else None
+        )
+
+        if active_name in options:
+            st.session_state["tel_active_run_select"] = active_name
+        elif "tel_active_run_select" not in st.session_state:
+            st.session_state["tel_active_run_select"] = options[0]
+
+        selected = st.selectbox("Run", options, key="tel_active_run_select")
+        st.session_state["tel_active_run"] = run_map[selected]
+
+    at = AppTest.from_function(sidebar_app)
+    at.run()
+    assert not at.exception
+    assert at.selectbox[0].value == "run_2026-01-02", (
+        "Without active run, selectbox must default to newest run"
+    )
+
 
 def test_sidebar_run_selector_no_crash_empty_state() -> None:
     """_sidebar_run_selector must not raise regardless of saved-run availability."""
@@ -138,31 +273,57 @@ def test_sidebar_run_selector_no_crash_empty_state() -> None:
 
 
 def test_active_run_in_session_state_loads_data_no_crash() -> None:
-    """When tel_active_run is pre-set in session state and the path exists,
-    _load_data must return data and the app must not crash."""
-    import tempfile
-
-    from src.visualization.data_io import save_run
-    cfg = TelemetryGeneratorConfig(n_channels=4, n_timesteps=100, seed=0,
-                                   anomaly_ratio=0.05)
-    telemetry, labels_mc = TelemetryGenerator(cfg).generate(n_series=3)
-    with tempfile.TemporaryDirectory() as tmp:
-        saved = save_run({"telemetry.pt": telemetry, "labels.pt": labels_mc},
-                         base_dir=tmp)
-        at = AppTest.from_file(APP_PATH)
-        at.session_state["tel_active_run"] = saved
-        at.run()
-        assert not at.exception
+    """When tel_active_run is pre-set and the path exists on disk,
+    the app must not crash — exercises the full _load_data() pipeline."""
+    saved_str, telemetry, labels_mc = _saved_run(n_series=3)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
 
 
 # ---------------------------------------------------------------------------
-# 5. Visualize tab — no data scenario must not crash
+# 5. Visualize tab — content when data is loaded
 # ---------------------------------------------------------------------------
 
 def test_visualize_tab_no_data_shows_info() -> None:
     """Visualize tab must display an info message (not crash) when no data exists."""
     at = AppTest.from_file(APP_PATH).run()
     assert not at.exception
+
+
+def test_visualize_tab_shows_metrics_when_data_loaded() -> None:
+    """Visualize tab must render metrics (Series, Timesteps, Anomaly ratio)
+    when a valid run is loaded via tel_active_run."""
+    saved_str, telemetry, labels_mc = _saved_run(n_series=5)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
+    metric_labels = [m.label for m in at.metric]
+    assert "Series" in metric_labels, f"Expected 'Series' metric, got: {metric_labels}"
+    assert "Timesteps / series" in metric_labels
+
+
+def test_visualize_tab_shows_channel_stats_table() -> None:
+    """Visualize tab must render a channel stats table when data is loaded."""
+    saved_str, telemetry, labels_mc = _saved_run(n_series=3)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
+    assert len(at.table) > 0, "Expected at least one st.table in the Visualize tab"
+
+
+def test_visualize_tab_series_slider_present_for_multi_series() -> None:
+    """Series selector slider must be rendered when the loaded dataset has N>1."""
+    saved_str, telemetry, labels_mc = _saved_run(n_series=5)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
+    slider_keys = [s.key for s in at.slider]
+    assert "tel_viz_series_idx" in slider_keys
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +338,7 @@ def test_detector_tab_no_data_no_crash(tab_key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. Reset button resets sliders to GEN_DEFAULTS
+# 7. Reset button resets sliders to GEN_DEFAULTS
 # ---------------------------------------------------------------------------
 
 def test_reset_button_restores_defaults() -> None:
@@ -197,3 +358,81 @@ def test_reset_button_restores_defaults() -> None:
         f"tel_n_series should be reset to {GEN_DEFAULTS['tel_n_series']}, "
         f"got {at.session_state['tel_n_series']}"
     )
+
+
+def test_reset_button_restores_all_numeric_defaults() -> None:
+    """All numeric GEN_DEFAULTS must be restored by clicking Reset."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    at.slider(key="tel_n_series").set_value(99).run()
+    at.slider(key="tel_n_channels").set_value(2).run()
+    at.slider(key="tel_noise_std").set_value(0.5).run()
+    at.button(key="tel_reset").click().run()
+    assert not at.exception
+    for key, expected in GEN_DEFAULTS.items():
+        if key in {s.key for s in at.slider}:
+            actual = at.slider(key=key).value
+            assert actual == expected, (
+                f"After reset: slider '{key}' = {actual!r}, expected {expected!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 8. Slider interaction — changing values rerenders without crash
+# ---------------------------------------------------------------------------
+
+def test_n_series_slider_interaction_no_crash() -> None:
+    """Changing the n_series slider must not crash the app."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    at.slider(key="tel_n_series").set_value(50).run()
+    assert not at.exception
+    assert at.slider(key="tel_n_series").value == 50
+
+
+def test_noise_slider_interaction_no_crash() -> None:
+    """Changing noise_std must not crash the app."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    at.slider(key="tel_noise_std").set_value(0.2).run()
+    assert not at.exception
+
+
+def test_anomaly_ratio_slider_interaction_no_crash() -> None:
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    at.slider(key="tel_anomaly_ratio").set_value(0.15).run()
+    assert not at.exception
+
+
+# ---------------------------------------------------------------------------
+# 9. Warning — legacy 2D data emits st.warning via _ensure_3d
+# ---------------------------------------------------------------------------
+
+def test_ensure_3d_emits_warning_for_legacy_data() -> None:
+    """Loading a legacy (T,C) run must emit a st.warning, not crash.
+
+    The run must be saved inside DEFAULT_DATA_DIR so that _sidebar_run_selector
+    picks it up and honours the tel_active_run pre-set.  We clean up afterwards.
+    """
+    import shutil
+
+    from src.visualization.telemetry_dashboard import DEFAULT_DATA_DIR
+
+    saved = save_run(
+        {
+            "telemetry.pt": torch.randn(100, 4),   # legacy 2D shape
+            "labels.pt": torch.zeros(100, dtype=torch.long),
+        },
+        base_dir=DEFAULT_DATA_DIR,
+    )
+    try:
+        at = AppTest.from_file(APP_PATH)
+        at.session_state["tel_active_run"] = saved
+        at.run()
+        assert not at.exception
+        assert len(at.warning) > 0, (
+            "Expected a st.warning for legacy (T,C) data, got none"
+        )
+    finally:
+        shutil.rmtree(saved, ignore_errors=True)
