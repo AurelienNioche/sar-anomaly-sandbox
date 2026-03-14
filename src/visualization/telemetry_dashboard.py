@@ -278,6 +278,7 @@ def _detector_tab(
         st.session_state[f"{tab_key}_labels_mc"] = test_labels_mc
         st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
+        st.session_state[f"{tab_key}_det_ran"] = detector_name
         st.session_state.pop(f"{tab_key}_threshold", None)
         st.caption(
             f"Trained on {len(train_idx)}/{n} series, scored on {len(test_idx)}/{n} series."
@@ -629,6 +630,7 @@ def tab_deep() -> None:
         st.session_state["tel_deep_labels_mc"] = test_labels_mc
         st.session_state["tel_deep_test_tel"] = telemetry[test_idx]
         st.session_state["tel_deep_test_labels_mc"] = labels_mc[test_idx]
+        st.session_state["tel_deep_det_ran"] = "LSTM Autoencoder"
         st.session_state["tel_deep_losses"] = det.train_losses
         st.session_state.pop("tel_deep_threshold", None)
         st.caption(
@@ -665,11 +667,57 @@ def tab_deep() -> None:
     )
 
 
+def _cmp_metrics_from_state(tab_key: str) -> dict | None:
+    """Return AUC / best-F1 / ROC data for a detector already scored in session state.
+
+    Returns None if no scores are stored for *tab_key* yet.
+    """
+    if f"{tab_key}_scores" not in st.session_state:
+        return None
+    scores_t = st.session_state[f"{tab_key}_scores"]
+    labels_t = st.session_state[f"{tab_key}_labels_mc"]
+    y_true = (labels_t > 0).long().numpy()
+    y_score = scores_t.numpy()
+    auc = roc_auc_score(y_true, y_score)
+    best_f1 = 0.0
+    for pct in range(1, 100):
+        thresh = float(np.percentile(y_score, pct))
+        preds = (y_score >= thresh).astype(int)
+        candidate = f1_score(y_true, preds, zero_division=0)
+        if candidate > best_f1:
+            best_f1 = candidate
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr}
+
+
+def _cmp_run_and_store(
+    tab_key: str,
+    det_name: str,
+    detector,
+    telemetry: torch.Tensor,
+    labels_mc: torch.Tensor,
+    train_frac: float,
+) -> None:
+    """Fit *detector*, score the test split, and store results under *tab_key*."""
+    train_data, train_idx, test_idx = _train_test_split(telemetry, train_frac)
+    detector.fit(train_data)
+    n_t, n_c = telemetry.shape[1], telemetry.shape[2]
+    test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
+    scores = detector.score(test_tel)
+    st.session_state[f"{tab_key}_scores"] = scores
+    st.session_state[f"{tab_key}_labels_mc"] = labels_mc[test_idx].reshape(-1)
+    st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
+    st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
+    st.session_state[f"{tab_key}_det_ran"] = det_name
+    st.session_state.pop(f"{tab_key}_threshold", None)
+
+
 def tab_comparison() -> None:
     st.header("Model Comparison")
     st.markdown(
-        "Runs all detectors with default settings and overlays their ROC curves. "
-        "Uses a random 50/50 series-level split — no labels used for training."
+        "Overlays ROC curves from the Statistical, ML, and Deep tabs. "
+        "Results are read directly from each tab's last run — **no recomputation** "
+        "unless a detector has not been run yet."
     )
 
     result = _load_data()
@@ -678,57 +726,66 @@ def tab_comparison() -> None:
         return
     telemetry, labels_mc = result
 
-    if not st.button("Run All Detectors", key="tel_cmp_run"):
-        st.info("Click **Run All Detectors** to compare.")
+    # Slots: (tab_key, display_name_fallback)
+    slots: list[tuple[str, str]] = [
+        ("tel_stat", "Statistical"),
+        ("tel_ml", "ML"),
+        ("tel_deep", "LSTM Autoencoder"),
+    ]
+
+    # Determine which slots have scores ready and which are still missing.
+    results: dict[str, dict] = {}
+    missing_slots: list[tuple[str, str]] = []
+
+    for tab_key, fallback in slots:
+        metrics = _cmp_metrics_from_state(tab_key)
+        if metrics is not None:
+            det_name = st.session_state.get(f"{tab_key}_det_ran", fallback)
+            results[det_name] = metrics
+        else:
+            missing_slots.append((tab_key, fallback))
+
+    # --- Run-missing button -----------------------------------------------
+    if missing_slots:
+        missing_names = [name for _, name in missing_slots]
+        st.warning(
+            f"Not yet run: **{', '.join(missing_names)}**. "
+            "Go to each tab and click **Run**, or use the button below to run "
+            "each missing detector with its current tab settings."
+        )
+        if st.button("Run missing detectors", key="tel_cmp_run"):
+            n_todo = len(missing_slots)
+            progress = st.progress(0.0)
+            for i, (tab_key, fallback) in enumerate(missing_slots):
+                if tab_key == "tel_deep":
+                    window = int(st.session_state.get("tel_deep_window", 30))
+                    hidden = int(st.session_state.get("tel_deep_hidden", 32))
+                    epochs = int(st.session_state.get("tel_deep_epochs", 20))
+                    frac = float(st.session_state.get("tel_deep_frac", 0.5))
+                    det_name = "LSTM Autoencoder"
+                    detector = LSTMAutoencoderDetector(
+                        window=window, hidden_size=hidden, n_epochs=epochs
+                    )
+                elif tab_key == "tel_stat":
+                    det_name = st.session_state.get("tel_stat_det", "Mahalanobis")
+                    window = int(st.session_state.get("tel_stat_window", 20))
+                    frac = float(st.session_state.get("tel_stat_frac", 0.5))
+                    detector = _STAT_DETECTORS[det_name](window)
+                else:
+                    det_name = st.session_state.get("tel_ml_det", "One-Class SVM")
+                    window = int(st.session_state.get("tel_ml_window", 10))
+                    frac = float(st.session_state.get("tel_ml_frac", 0.5))
+                    detector = _ML_DETECTORS[det_name](window)
+                with st.spinner(f"Running {det_name}…"):
+                    _cmp_run_and_store(tab_key, det_name, detector, telemetry, labels_mc, frac)
+                progress.progress((i + 1) / n_todo)
+            st.rerun()
+
+    if not results:
+        st.info("No detectors have been run yet. Use the Statistical, ML, and Deep tabs.")
         return
 
-    train_data, _, test_idx = _train_test_split(telemetry, 0.5)
-    n_t, n_c = telemetry.shape[1], telemetry.shape[2]
-    test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
-    y_mc = labels_mc[test_idx].reshape(-1).numpy()
-    y_true = (y_mc > 0).astype(int)
-
-    detectors: dict = {
-        "Z-Score": PerChannelZScore(window=20),
-        "Mahalanobis": MahalanobisDetector(window=20),
-        "CUSUM": CUSUMDetector(),
-        "Isolation Forest": IsolationForestDetector(window=20),
-        "One-Class SVM": OneClassSVMDetector(window=20),
-    }
-
-    results: dict[str, dict] = {}
-    progress = st.progress(0.0)
-    for i, (name, det) in enumerate(detectors.items()):
-        with st.spinner(f"Fitting {name}…"):
-            det.fit(train_data)
-            scores = det.score(test_tel).numpy()
-            auc = roc_auc_score(y_true, scores)
-            best_f1 = 0.0
-            for pct in range(1, 100):
-                thresh = float(np.percentile(scores, pct))
-                preds = (scores >= thresh).astype(int)
-                f1 = f1_score(y_true, preds, zero_division=0)
-                if f1 > best_f1:
-                    best_f1 = f1
-            fpr, tpr, _ = roc_curve(y_true, scores)
-            results[name] = {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr}
-        progress.progress((i + 1) / (len(detectors) + 1))
-
-    with st.spinner("Fitting LSTM autoencoder (may take a moment)…"):
-        lstm = LSTMAutoencoderDetector(window=30, hidden_size=32, n_epochs=20).fit(train_data)
-        scores = lstm.score(test_tel).numpy()
-        auc = roc_auc_score(y_true, scores)
-        best_f1 = 0.0
-        for pct in range(1, 100):
-            thresh = float(np.percentile(scores, pct))
-            preds = (scores >= thresh).astype(int)
-            f1 = f1_score(y_true, preds, zero_division=0)
-            if f1 > best_f1:
-                best_f1 = f1
-        fpr, tpr, _ = roc_curve(y_true, scores)
-        results["LSTM Autoencoder"] = {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr}
-    progress.progress(1.0)
-
+    # --- Render ROC + table -----------------------------------------------
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("ROC Curves")
@@ -749,6 +806,13 @@ def tab_comparison() -> None:
             for name, r in results.items()
         ]
         st.table(rows)
+
+    if missing_slots:
+        st.caption(
+            f"⚑ {len(missing_slots)} detector(s) not shown yet: "
+            + ", ".join(name for _, name in missing_slots)
+            + "."
+        )
 
 
 def main() -> None:

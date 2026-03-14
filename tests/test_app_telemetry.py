@@ -436,3 +436,146 @@ def test_ensure_3d_emits_warning_for_legacy_data() -> None:
         )
     finally:
         shutil.rmtree(saved, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 10. Comparison tab — reuses existing scores; runs only what is missing
+# ---------------------------------------------------------------------------
+
+def test_comparison_tab_shows_warning_when_no_detectors_run() -> None:
+    """Comparison tab must show a warning (not crash) when no detector has been run."""
+    saved_str, _, _ = _saved_run(n_series=5)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
+    # No scores → expect at least one warning listing the missing detectors
+    assert len(at.warning) > 0, (
+        "Expected a st.warning when no detectors have been run yet"
+    )
+
+
+def _pre_run_detector(
+    session_state: dict,
+    tab_key: str,
+    det_name: str,
+    scores: torch.Tensor,
+    labels_mc_flat: torch.Tensor,
+    test_series: torch.Tensor,
+    test_labels_mc: torch.Tensor,
+) -> None:
+    """Write the full set of session-state keys that _detector_tab stores after Run.
+
+    Both the individual detector tab AND the comparison tab read these keys, so
+    the test must supply the complete set to avoid KeyError crashes.
+    """
+    session_state[f"{tab_key}_scores"] = scores
+    session_state[f"{tab_key}_labels_mc"] = labels_mc_flat
+    session_state[f"{tab_key}_test_tel"] = test_series
+    session_state[f"{tab_key}_test_labels_mc"] = test_labels_mc
+    session_state[f"{tab_key}_det_ran"] = det_name
+
+
+def test_comparison_tab_reuses_stat_scores_without_rerunning() -> None:
+    """When tel_stat_scores is pre-populated in session state, the Comparison tab
+    must render the ROC curve immediately (no button click, no recomputation)."""
+    from src.models.baselines import MahalanobisDetector
+
+    saved_str, telemetry, labels_mc = _saved_run(n_series=6)
+    n, n_t, n_c = telemetry.shape
+    k = n // 2
+    train = telemetry[:k].reshape(k * n_t, n_c)
+    test_series = telemetry[k:]
+    scores = MahalanobisDetector(window=5).fit(train).score(
+        test_series.reshape((n - k) * n_t, n_c)
+    )
+
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    _pre_run_detector(
+        at.session_state, "tel_stat", "Mahalanobis",
+        scores, labels_mc[k:].reshape(-1), test_series, labels_mc[k:],
+    )
+    at.run()
+    assert not at.exception
+
+    assert len(at.table) > 0, "Expected metrics table in Comparison tab"
+    # at.table[-1] is the Comparison metrics table; earlier tables belong to
+    # the Visualize tab (channel stats) and the Statistical tab (per-type AUC).
+    assert "Mahalanobis" in str(at.table[-1].value), (
+        f"Mahalanobis not found in comparison table; got: {at.table[-1].value}"
+    )
+
+
+def test_comparison_tab_shows_run_missing_button_for_partial_results() -> None:
+    """When only one of three detector slots has been run, the
+    'Run missing detectors' button must appear."""
+    from src.models.baselines import MahalanobisDetector
+
+    saved_str, telemetry, labels_mc = _saved_run(n_series=6)
+    n, n_t, n_c = telemetry.shape
+    k = n // 2
+    test_series = telemetry[k:]
+    scores = MahalanobisDetector(window=5).fit(
+        telemetry[:k].reshape(k * n_t, n_c)
+    ).score(test_series.reshape((n - k) * n_t, n_c))
+
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    _pre_run_detector(
+        at.session_state, "tel_stat", "Mahalanobis",
+        scores, labels_mc[k:].reshape(-1), test_series, labels_mc[k:],
+    )
+    at.run()
+    assert not at.exception
+
+    button_keys = [b.key for b in at.button]
+    assert "tel_cmp_run" in button_keys, (
+        "Expected 'Run missing detectors' button when ML and Deep have not been run"
+    )
+
+
+def test_comparison_tab_no_run_missing_button_when_all_run() -> None:
+    """When all three detector categories have been run, the 'Run missing detectors'
+    button must NOT appear — the comparison shows results immediately."""
+    from src.models.baselines import MahalanobisDetector
+    from src.models.classical import IsolationForestDetector
+
+    saved_str, telemetry, labels_mc = _saved_run(n_series=6)
+    n, n_t, n_c = telemetry.shape
+    k = n // 2
+    test_series = telemetry[k:]
+    flat_test = test_series.reshape((n - k) * n_t, n_c)
+    labels_flat = labels_mc[k:].reshape(-1)
+    train = telemetry[:k].reshape(k * n_t, n_c)
+
+    stat_scores = MahalanobisDetector(window=5).fit(train).score(flat_test)
+    ml_scores = IsolationForestDetector(window=5).fit(train).score(flat_test)
+
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    _pre_run_detector(
+        at.session_state, "tel_stat", "Mahalanobis",
+        stat_scores, labels_flat, test_series, labels_mc[k:],
+    )
+    _pre_run_detector(
+        at.session_state, "tel_ml", "Isolation Forest",
+        ml_scores, labels_flat, test_series, labels_mc[k:],
+    )
+    _pre_run_detector(
+        at.session_state, "tel_deep", "LSTM Autoencoder",
+        stat_scores.clone(), labels_flat, test_series, labels_mc[k:],
+    )
+    at.run()
+    assert not at.exception
+
+    button_keys = [b.key for b in at.button]
+    assert "tel_cmp_run" not in button_keys, (
+        "'Run missing detectors' button must be absent when all detectors have been run"
+    )
+
+    assert len(at.table) > 0
+    # at.table[-1] is the Comparison metrics table (last in page order)
+    table_str = str(at.table[-1].value)
+    for name in ("Mahalanobis", "Isolation Forest", "LSTM Autoencoder"):
+        assert name in table_str, f"'{name}' not found in comparison table"
