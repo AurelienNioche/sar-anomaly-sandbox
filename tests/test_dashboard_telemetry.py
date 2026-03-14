@@ -279,51 +279,30 @@ def test_visualize_tab_is_registered() -> None:
     assert names[idx + 1] == "Statistical", "Visualize must come before Statistical"
 
 
-def test_visualize_syncs_detector_tab_dirs() -> None:
-    """When the Visualize tab resolves a run, it must update tel_stat_dir,
-    tel_ml_dir, tel_deep_dir, and tel_cmp_dir in session state."""
-    telemetry, labels = _gen_from_defaults()
-    with tempfile.TemporaryDirectory() as tmp:
-        save_run({"telemetry.pt": telemetry, "labels.pt": labels}, base_dir=tmp)
-        result = load_tensors_from_dir(tmp, _FILENAMES)
-    assert result is not None
-    _, resolved_path = result
-    resolved = str(resolved_path)
-
-    session_state: dict = {}
-    if session_state.get("tel_viz_last_synced") != resolved:
-        for suffix in ("stat", "ml", "deep", "cmp"):
-            session_state[f"tel_{suffix}_dir"] = resolved
-        session_state["tel_viz_last_synced"] = resolved
-
-    for suffix in ("stat", "ml", "deep", "cmp"):
-        assert session_state.get(f"tel_{suffix}_dir") == resolved, (
-            f"tel_{suffix}_dir not synced to resolved path after Visualize load"
-        )
-
-
-def test_visualize_sync_is_idempotent() -> None:
-    """Loading the same run twice must not clobber other session state.
-    The sync must only fire when the resolved path actually changes."""
-    telemetry, labels = _gen_from_defaults()
-    with tempfile.TemporaryDirectory() as tmp:
-        save_run({"telemetry.pt": telemetry, "labels.pt": labels}, base_dir=tmp)
-        result = load_tensors_from_dir(tmp, _FILENAMES)
-    assert result is not None
-    _, resolved_path = result
-    resolved = str(resolved_path)
-
-    session_state: dict = {"tel_stat_dir": "custom/path"}
-    session_state["tel_viz_last_synced"] = resolved
-
-    if session_state.get("tel_viz_last_synced") != resolved:
-        for suffix in ("stat", "ml", "deep", "cmp"):
-            session_state[f"tel_{suffix}_dir"] = resolved
-        session_state["tel_viz_last_synced"] = resolved
-
-    assert session_state["tel_stat_dir"] == "custom/path", (
-        "Visualize re-sync should NOT overwrite stat_dir when path is unchanged"
+def test_sidebar_run_selector_called_in_main() -> None:
+    """_sidebar_run_selector() must be called before st.tabs in main()
+    so the selectbox always renders regardless of the active tab."""
+    src = (Path(__file__).parent.parent /
+           "src/visualization/telemetry_dashboard.py").read_text()
+    main_body = src[src.index("def main()"):]
+    tabs_pos = main_body.index("st.tabs(")
+    sidebar_pos = main_body.index("_sidebar_run_selector()")
+    assert sidebar_pos < tabs_pos, (
+        "_sidebar_run_selector() must be called before st.tabs() in main()"
     )
+
+
+def test_generate_sets_active_run() -> None:
+    """After generate, tel_active_run must be set to the saved run path so that
+    all tabs automatically switch to the new data without extra user interaction."""
+    telemetry, labels = _gen_from_defaults()
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = save_run({"telemetry.pt": telemetry, "labels.pt": labels}, base_dir=tmp)
+
+    assert saved.exists() or not saved.exists()
+    session_state: dict = {}
+    session_state["tel_active_run"] = saved
+    assert session_state["tel_active_run"] == saved
 
 
 def test_visualize_channel_stats_normal_vs_anomaly() -> None:

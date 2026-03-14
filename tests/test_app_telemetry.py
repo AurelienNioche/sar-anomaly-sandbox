@@ -128,7 +128,35 @@ def test_generator_tab_series_slider_present_for_n_gt_1() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Visualize tab — no data scenario must not crash
+# 4. Sidebar run selector
+# ---------------------------------------------------------------------------
+
+def test_sidebar_run_selector_no_crash_empty_state() -> None:
+    """_sidebar_run_selector must not raise regardless of saved-run availability."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+
+
+def test_active_run_in_session_state_loads_data_no_crash() -> None:
+    """When tel_active_run is pre-set in session state and the path exists,
+    _load_data must return data and the app must not crash."""
+    import tempfile
+
+    from src.visualization.data_io import save_run
+    cfg = TelemetryGeneratorConfig(n_channels=4, n_timesteps=100, seed=0,
+                                   anomaly_ratio=0.05)
+    telemetry, labels_mc = TelemetryGenerator(cfg).generate(n_series=3)
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = save_run({"telemetry.pt": telemetry, "labels.pt": labels_mc},
+                         base_dir=tmp)
+        at = AppTest.from_file(APP_PATH)
+        at.session_state["tel_active_run"] = saved
+        at.run()
+        assert not at.exception
+
+
+# ---------------------------------------------------------------------------
+# 5. Visualize tab — no data scenario must not crash
 # ---------------------------------------------------------------------------
 
 def test_visualize_tab_no_data_shows_info() -> None:
@@ -138,7 +166,7 @@ def test_visualize_tab_no_data_shows_info() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Detector tabs — no data must not crash
+# 6. Detector tabs — no data must not crash
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("tab_key", ["tel_stat", "tel_ml", "tel_deep", "tel_cmp"])

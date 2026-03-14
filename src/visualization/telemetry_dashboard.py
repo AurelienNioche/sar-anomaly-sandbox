@@ -49,25 +49,53 @@ _TYPE_NAMES: dict[int, str] = {v: k for k, v in ANOMALY_TYPE_IDS.items()}
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# Sidebar — shared run selector
 # ---------------------------------------------------------------------------
 
-def _run_selectbox(tab_key: str) -> Path | None:
-    """Render a selectbox of available runs; return the selected run Path or None."""
-    runs = list_runs(DEFAULT_DATA_DIR, _FILENAMES)
-    if not runs:
-        st.info(f"No saved runs found in `{DEFAULT_DATA_DIR}` — generate data first.")
-        return None
-    options = [r.name for r in runs]
-    selected = st.selectbox(
-        "Saved run",
-        options,
-        index=0,
-        key=f"{tab_key}_run_select",
-        help="Runs are listed newest first.",
-    )
-    return runs[options.index(selected)]
+def _sidebar_run_selector() -> None:
+    """Sidebar widget: pick the active dataset used by all tabs.
 
+    Stores the selected run Path in ``st.session_state["tel_active_run"]``.
+    When the Generator tab saves a new run it sets this key directly so that
+    all other tabs immediately switch to the fresh data.
+    """
+    with st.sidebar:
+        st.header("Active Dataset")
+        runs = list_runs(DEFAULT_DATA_DIR, _FILENAMES)
+        if not runs:
+            st.info(
+                f"No saved runs found in `{DEFAULT_DATA_DIR}`. "
+                "Use the **Generator** tab to create one."
+            )
+            st.session_state["tel_active_run"] = None
+            return
+
+        options = [r.name for r in runs]
+        run_map = {r.name: r for r in runs}
+
+        active = st.session_state.get("tel_active_run")
+        if isinstance(active, Path):
+            active_name = active.name
+        elif isinstance(active, str):
+            active_name = Path(active).name
+        else:
+            active_name = None
+        default_idx = options.index(active_name) if active_name in options else 0
+
+        selected = st.selectbox(
+            "Run",
+            options,
+            index=default_idx,
+            key="tel_active_run_select",
+            help="Newest first. All tabs use this run.",
+        )
+        st.session_state["tel_active_run"] = run_map[selected]
+        st.caption(f"`{run_map[selected]}`")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 def _series_slider(label: str, n: int, key: str) -> int:
     """Return a series index slider, or 0 silently when there is only one series."""
@@ -96,12 +124,19 @@ def _ensure_3d(
     return telemetry, labels
 
 
-def _load_data(tab_key: str) -> tuple[torch.Tensor, torch.Tensor] | None:
-    """Load a saved run. Returns (telemetry (N,T,C), labels (N,T) multi-class)."""
-    run_path = _run_selectbox(tab_key)
-    if run_path is None:
+def _load_data() -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Load the active run selected in the sidebar.
+
+    Returns (telemetry (N,T,C), labels (N,T) multi-class), or None when no
+    run has been selected yet.
+    """
+    active = st.session_state.get("tel_active_run")
+    if active is None:
         return None
-    st.caption(f"Loaded `{run_path}`")
+    run_path = Path(active) if not isinstance(active, Path) else active
+    if not run_path.exists():
+        st.warning(f"Run `{run_path}` no longer exists — select another in the sidebar.")
+        return None
     tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
     return _ensure_3d(tensors[0], tensors[1])
 
@@ -198,13 +233,14 @@ def _detector_tab(
 
     *detector_factories* maps display name → callable(window) → unfitted detector.
     Training uses a label-free random series-level split.
+    Data is loaded from the run selected in the sidebar.
     """
     st.header(header)
     st.markdown(description)
 
-    result = _load_data(tab_key)
+    result = _load_data()
     if result is None:
-        st.info("Select a data source above.")
+        st.info("Select a run in the **sidebar** to get started.")
         return
     telemetry, labels_mc = result
 
@@ -378,12 +414,16 @@ def tab_generator() -> None:
     with col1:
         n_series = st.slider("Number of series", 5, 100, 20, 5, key="tel_n_series")
         n_channels = st.slider("Channels", 2, 10, 7, key="tel_n_channels")
-        n_timesteps = st.slider("Timesteps per series", 200, 5000, 1000, 100, key="tel_n_timesteps")
+        n_timesteps = st.slider(
+            "Timesteps per series", 200, 5000, 1000, 100, key="tel_n_timesteps"
+        )
         noise_std = st.slider("Noise std", 0.01, 0.5, 0.05, 0.01, key="tel_noise_std")
         orbital_period = st.slider(
             "Orbital period (steps)", 50, 500, 200, 10, key="tel_orbital_period"
         )
-        anomaly_ratio = st.slider("Anomaly ratio", 0.01, 0.3, 0.05, 0.01, key="tel_anomaly_ratio")
+        anomaly_ratio = st.slider(
+            "Anomaly ratio", 0.01, 0.3, 0.05, 0.01, key="tel_anomaly_ratio"
+        )
         anomaly_types = st.multiselect(
             "Anomaly types",
             options=list(ANOMALY_TYPES),
@@ -419,15 +459,9 @@ def tab_generator() -> None:
                 {"telemetry.pt": telemetry, "labels.pt": labels_mc},
                 base_dir=DEFAULT_DATA_DIR,
             )
-            saved_str = str(saved)
-            st.session_state["tel_saved_path"] = saved_str
-            for suffix in ("stat", "ml", "deep", "cmp"):
-                st.session_state[f"tel_{suffix}_dir"] = saved_str
-
-        if st.session_state.get("tel_saved_path"):
+            st.session_state["tel_active_run"] = saved
             st.success(
-                f"Saved to `{st.session_state['tel_saved_path']}` — "
-                "all detector tabs updated automatically."
+                f"Saved to `{saved}` — sidebar updated, all tabs now use this run."
             )
 
     with col2:
@@ -448,28 +482,13 @@ def tab_generator() -> None:
 
 def tab_visualize() -> None:
     st.header("Visualize")
-    st.markdown(
-        "Browse any saved dataset and inspect individual series. "
-        "The run open here automatically becomes the data source for all detector tabs."
-    )
+    st.markdown("Inspect the active dataset. Select a different run in the sidebar.")
 
-    run_path = _run_selectbox("tel_viz")
-    telemetry: torch.Tensor | None = None
-    labels_mc: torch.Tensor | None = None
-
-    if run_path is not None:
-        resolved = str(run_path)
-        st.caption(f"Loaded `{resolved}`")
-        tensors = tuple(load_tensor(run_path / f) for f in _FILENAMES)
-        telemetry, labels_mc = _ensure_3d(tensors[0], tensors[1])
-        if st.session_state.get("tel_viz_last_synced") != resolved:
-            for suffix in ("stat", "ml", "deep", "cmp"):
-                st.session_state[f"tel_{suffix}_dir"] = resolved
-            st.session_state["tel_viz_last_synced"] = resolved
-
-    if telemetry is None or labels_mc is None:
-        st.info("No data loaded — generate data in the **Generator** tab first.")
+    result = _load_data()
+    if result is None:
+        st.info("Select a run in the **sidebar** to get started.")
         return
+    telemetry, labels_mc = result
 
     n, n_t, n_c = telemetry.shape
     n_anomaly = int((labels_mc > 0).sum().item())
@@ -480,7 +499,6 @@ def tab_visualize() -> None:
     c3.metric("Anomalous timesteps (total)", n_anomaly)
     c4.metric("Anomaly ratio", f"{n_anomaly / total_steps:.1%}")
 
-    # Per-type count
     type_counts = {
         _TYPE_NAMES[tid]: int((labels_mc == tid).sum().item())
         for tid in sorted(_TYPE_NAMES)
@@ -564,9 +582,9 @@ def tab_deep() -> None:
         "Anomaly score = per-timestep reconstruction MSE."
     )
 
-    result = _load_data("tel_deep")
+    result = _load_data()
     if result is None:
-        st.info("Select a data source above.")
+        st.info("Select a run in the **sidebar** to get started.")
         return
     telemetry, labels_mc = result
 
@@ -638,9 +656,9 @@ def tab_comparison() -> None:
         "Uses a random 50/50 series-level split — no labels used for training."
     )
 
-    result = _load_data("tel_cmp")
+    result = _load_data()
     if result is None:
-        st.info("Select a data source above.")
+        st.info("Select a run in the **sidebar** to get started.")
         return
     telemetry, labels_mc = result
 
@@ -718,6 +736,7 @@ def tab_comparison() -> None:
 
 
 def main() -> None:
+    _sidebar_run_selector()
     st.title("Telemetry Anomaly Sandbox")
     tabs = st.tabs(["Generator", "Visualize", "Statistical", "ML", "Deep", "Comparison"])
     with tabs[0]:
