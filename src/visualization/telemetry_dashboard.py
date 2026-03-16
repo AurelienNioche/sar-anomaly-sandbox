@@ -2,6 +2,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import streamlit as st
 import torch
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, roc_curve
@@ -972,7 +973,18 @@ def tab_comparison() -> None:
             row[f"{short} (tr)"] = _fmt(tr, "type_aucs", tname)
             row[f"{short} (te)"] = _fmt(te, "type_aucs", tname)
         rows.append(row)
-    st.dataframe(rows, width="stretch", hide_index=True)
+    df = pd.DataFrame(rows)
+    tr_cols = [c for c in df.columns if c.endswith("(tr)")]
+    te_cols = [c for c in df.columns if c.endswith("(te)")]
+
+    def _color_split(col: pd.Series) -> list[str]:
+        if col.name in tr_cols:
+            return ["background-color: #dbeafe"] * len(col)  # blue-100
+        if col.name in te_cols:
+            return ["background-color: #dcfce7"] * len(col)  # green-100
+        return [""] * len(col)
+
+    st.dataframe(df.style.apply(_color_split), width="stretch", hide_index=True)
 
     if missing_slots:
         st.caption(
