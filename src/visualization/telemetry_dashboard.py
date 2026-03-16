@@ -602,6 +602,15 @@ _DEEP_DETECTOR_NAMES = [
     "MLP Autoencoder",
 ]
 
+# Maps each deep detector display name to its comparison-specific session state prefix.
+# The Comparison tab stores results for all three deep detectors independently under
+# these keys so that running one does not overwrite the others.
+_DEEP_CMP_KEY: dict[str, str] = {
+    "LSTM Autoencoder":        "tel_cmp_deep_lstm",
+    "Transformer Autoencoder": "tel_cmp_deep_transformer",
+    "MLP Autoencoder":         "tel_cmp_deep_mlp",
+}
+
 _DEEP_DETECTOR_DESCRIPTIONS: dict[str, str] = {
     "LSTM Autoencoder": (
         "Trains an LSTM encoder-decoder on sliding windows. "
@@ -684,6 +693,15 @@ def tab_deep() -> None:
         st.session_state["tel_deep_det_ran"] = det_name
         st.session_state["tel_deep_losses"] = det.train_losses
         st.session_state.pop("tel_deep_threshold", None)
+
+        # Also write to the per-detector comparison key so the Comparison tab
+        # can accumulate results for all three deep detectors independently.
+        cmp_key = _DEEP_CMP_KEY[det_name]
+        st.session_state[f"{cmp_key}_scores"] = scores
+        st.session_state[f"{cmp_key}_labels_mc"] = test_labels_mc
+        st.session_state[f"{cmp_key}_test_tel"] = telemetry[test_idx]
+        st.session_state[f"{cmp_key}_test_labels_mc"] = labels_mc[test_idx]
+        st.session_state[f"{cmp_key}_det_ran"] = det_name
         st.caption(
             f"Trained on {len(train_idx)}/{n} series, scored on {len(test_idx)}/{n} series."
         )
@@ -766,9 +784,10 @@ def _cmp_run_and_store(
 def tab_comparison() -> None:
     st.header("Model Comparison")
     st.markdown(
-        "Overlays ROC curves from the Statistical, ML, and Deep tabs. "
+        "Overlays ROC curves for all eight detectors. "
         "Results are read directly from each tab's last run — **no recomputation** "
-        "unless a detector has not been run yet."
+        "unless a detector has not been run yet. "
+        "Each deep detector accumulates its own slot independently."
     )
 
     result = _load_data()
@@ -777,11 +796,14 @@ def tab_comparison() -> None:
         return
     telemetry, labels_mc = result
 
-    # Slots: (tab_key, display_name_fallback)
+    # Slots: (session_state_key_prefix, display_name_fallback)
+    # Statistical and ML each have one slot; deep detectors each get their own.
     slots: list[tuple[str, str]] = [
-        ("tel_stat", "Statistical"),
-        ("tel_ml", "ML"),
-        ("tel_deep", "LSTM Autoencoder"),
+        ("tel_stat",                    "Statistical"),
+        ("tel_ml",                      "ML"),
+        ("tel_cmp_deep_lstm",           "LSTM Autoencoder"),
+        ("tel_cmp_deep_transformer",    "Transformer Autoencoder"),
+        ("tel_cmp_deep_mlp",            "MLP Autoencoder"),
     ]
 
     # Determine which slots have scores ready and which are still missing.
@@ -802,31 +824,46 @@ def tab_comparison() -> None:
         st.warning(
             f"Not yet run: **{', '.join(missing_names)}**. "
             "Go to each tab and click **Run**, or use the button below to run "
-            "each missing detector with its current tab settings."
+            "each missing detector with current tab settings."
         )
         if st.button("Run missing detectors", key="tel_cmp_run"):
             n_todo = len(missing_slots)
             progress = st.progress(0.0)
             for i, (tab_key, fallback) in enumerate(missing_slots):
-                if tab_key == "tel_deep":
-                    window = int(st.session_state.get("tel_deep_window", 30))
-                    hidden = int(st.session_state.get("tel_deep_hidden", 32))
-                    epochs = int(st.session_state.get("tel_deep_epochs", 20))
-                    frac = float(st.session_state.get("tel_deep_frac", 0.5))
-                    det_name = "LSTM Autoencoder"
-                    detector = LSTMAutoencoderDetector(
-                        window=window, hidden_size=hidden, n_epochs=epochs
-                    )
-                elif tab_key == "tel_stat":
+                frac = float(st.session_state.get("tel_deep_frac", 0.5))
+                if tab_key == "tel_stat":
                     det_name = st.session_state.get("tel_stat_det", "Mahalanobis")
                     window = int(st.session_state.get("tel_stat_window", 20))
                     frac = float(st.session_state.get("tel_stat_frac", 0.5))
                     detector = _STAT_DETECTORS[det_name](window)
-                else:
+                elif tab_key == "tel_ml":
                     det_name = st.session_state.get("tel_ml_det", "One-Class SVM")
                     window = int(st.session_state.get("tel_ml_window", 10))
                     frac = float(st.session_state.get("tel_ml_frac", 0.5))
                     detector = _ML_DETECTORS[det_name](window)
+                elif tab_key == "tel_cmp_deep_lstm":
+                    det_name = "LSTM Autoencoder"
+                    window = int(st.session_state.get("tel_deep_window", 30))
+                    hidden = int(st.session_state.get("tel_deep_hidden", 32))
+                    epochs = int(st.session_state.get("tel_deep_epochs", 20))
+                    detector = LSTMAutoencoderDetector(
+                        window=window, hidden_size=hidden, n_epochs=epochs
+                    )
+                elif tab_key == "tel_cmp_deep_transformer":
+                    det_name = "Transformer Autoencoder"
+                    window = int(st.session_state.get("tel_deep_window", 30))
+                    hidden = int(st.session_state.get("tel_deep_hidden", 32))
+                    epochs = int(st.session_state.get("tel_deep_epochs", 20))
+                    detector = TransformerAutoencoderDetector(
+                        window=window, d_model=hidden, n_epochs=epochs
+                    )
+                else:
+                    det_name = "MLP Autoencoder"
+                    hidden = int(st.session_state.get("tel_deep_hidden", 32))
+                    epochs = int(st.session_state.get("tel_deep_epochs", 20))
+                    detector = MLPAutoencoderDetector(
+                        hidden_size=hidden, n_epochs=epochs
+                    )
                 with st.spinner(f"Running {det_name}…"):
                     _cmp_run_and_store(tab_key, det_name, detector, telemetry, labels_mc, frac)
                 progress.progress((i + 1) / n_todo)

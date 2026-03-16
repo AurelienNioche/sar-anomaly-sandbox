@@ -508,7 +508,7 @@ def test_comparison_tab_reuses_stat_scores_without_rerunning() -> None:
 
 
 def test_comparison_tab_shows_run_missing_button_for_partial_results() -> None:
-    """When only one of three detector slots has been run, the
+    """When only one of five detector slots has been run, the
     'Run missing detectors' button must appear."""
     from src.models.baselines import MahalanobisDetector
 
@@ -531,13 +531,52 @@ def test_comparison_tab_shows_run_missing_button_for_partial_results() -> None:
 
     button_keys = [b.key for b in at.button]
     assert "tel_cmp_run" in button_keys, (
-        "Expected 'Run missing detectors' button when ML and Deep have not been run"
+        "Expected 'Run missing detectors' button when ML and all Deep slots have not been run"
+    )
+
+
+def test_comparison_deep_slots_are_independent() -> None:
+    """Running LSTM in the Deep tab fills tel_cmp_deep_lstm_* only.
+    The Transformer AE and MLP AE slots remain missing, so the Run button
+    must still appear, while LSTM is already shown in the comparison table."""
+    from src.models.baselines import MahalanobisDetector
+
+    saved_str, telemetry, labels_mc = _saved_run(n_series=6)
+    n, n_t, n_c = telemetry.shape
+    k = n // 2
+    test_series = telemetry[k:]
+    flat_test = test_series.reshape((n - k) * n_t, n_c)
+    labels_flat = labels_mc[k:].reshape(-1)
+    train = telemetry[:k].reshape(k * n_t, n_c)
+    scores = MahalanobisDetector(window=5).fit(train).score(flat_test)
+
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    _pre_run_detector(
+        at.session_state, "tel_cmp_deep_lstm", "LSTM Autoencoder",
+        scores, labels_flat, test_series, labels_mc[k:],
+    )
+    at.run()
+    assert not at.exception
+
+    button_keys = [b.key for b in at.button]
+    assert "tel_cmp_run" in button_keys, (
+        "Run missing button must appear when Transformer AE and MLP AE are not yet run"
+    )
+    table_str = str(at.table[-1].value)
+    assert "LSTM Autoencoder" in table_str, (
+        "LSTM Autoencoder must be visible in comparison once its slot is filled"
     )
 
 
 def test_comparison_tab_no_run_missing_button_when_all_run() -> None:
-    """When all three detector categories have been run, the 'Run missing detectors'
-    button must NOT appear — the comparison shows results immediately."""
+    """When all five detector slots have been filled, the 'Run missing detectors'
+    button must NOT appear — the comparison shows results immediately.
+
+    The three deep-detector slots use the comparison-specific keys
+    (tel_cmp_deep_lstm_*, tel_cmp_deep_transformer_*, tel_cmp_deep_mlp_*)
+    rather than tel_deep_*, so each deep detector has an independent slot.
+    """
     from src.models.baselines import MahalanobisDetector
     from src.models.classical import IsolationForestDetector
 
@@ -562,22 +601,29 @@ def test_comparison_tab_no_run_missing_button_when_all_run() -> None:
         at.session_state, "tel_ml", "Isolation Forest",
         ml_scores, labels_flat, test_series, labels_mc[k:],
     )
-    _pre_run_detector(
-        at.session_state, "tel_deep", "LSTM Autoencoder",
-        stat_scores.clone(), labels_flat, test_series, labels_mc[k:],
-    )
+    # Deep detectors each get their own comparison-specific slot
+    for cmp_key, det_name in [
+        ("tel_cmp_deep_lstm", "LSTM Autoencoder"),
+        ("tel_cmp_deep_transformer", "Transformer Autoencoder"),
+        ("tel_cmp_deep_mlp", "MLP Autoencoder"),
+    ]:
+        _pre_run_detector(
+            at.session_state, cmp_key, det_name,
+            stat_scores.clone(), labels_flat, test_series, labels_mc[k:],
+        )
     at.run()
     assert not at.exception
 
     button_keys = [b.key for b in at.button]
     assert "tel_cmp_run" not in button_keys, (
-        "'Run missing detectors' button must be absent when all detectors have been run"
+        "'Run missing detectors' button must be absent when all slots are filled"
     )
 
     assert len(at.table) > 0
     # at.table[-1] is the Comparison metrics table (last in page order)
     table_str = str(at.table[-1].value)
-    for name in ("Mahalanobis", "Isolation Forest", "LSTM Autoencoder"):
+    for name in ("Mahalanobis", "Isolation Forest", "LSTM Autoencoder",
+                 "Transformer Autoencoder", "MLP Autoencoder"):
         assert name in table_str, f"'{name}' not found in comparison table"
 
 
