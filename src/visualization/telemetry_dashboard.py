@@ -933,18 +933,11 @@ def tab_comparison() -> None:
 
     type_names = [_TYPE_NAMES[tid] for tid in sorted(_TYPE_NAMES)]
 
-    def _metrics_row(name: str, r: dict, m: dict | None) -> dict:
-        sp = r.get("split")
-        row: dict = {
-            "Detector": name,
-            "N series": sp["n_train"] if sp else "—",
-            "AUC": f"{m['auc']:.3f}" if m else "—",
-            "Best F1": f"{m['f1']:.3f}" if m else "—",
-        }
-        for tname in type_names:
-            v = (m or {}).get("type_aucs", {}).get(tname, float("nan"))
-            row[f"AUC {tname}"] = "—" if (m is None or np.isnan(v)) else f"{v:.3f}"
-        return row
+    def _fmt(m: dict | None, key: str, sub: str | None = None) -> str:
+        if m is None:
+            return "—"
+        v = m["type_aucs"].get(sub, float("nan")) if sub else m[key]
+        return "—" if np.isnan(v) else f"{v:.3f}"
 
     # --- ROC curves (test split) ------------------------------------------
     st.subheader("ROC Curves — Test split")
@@ -959,14 +952,27 @@ def tab_comparison() -> None:
     st.pyplot(fig)
     plt.close()
 
-    # --- Two metric tables ------------------------------------------------
-    col_tr, col_te = st.columns(2)
-    with col_tr:
-        st.subheader("Training metrics")
-        st.table([_metrics_row(n, r, r.get("train")) for n, r in results.items()])
-    with col_te:
-        st.subheader("Test metrics")
-        st.table([_metrics_row(n, r, r["test"]) for n, r in results.items()])
+    # --- Single merged table: each metric has a (train) and (test) column --
+    st.subheader("Metrics")
+    rows = []
+    for name, r in results.items():
+        sp = r.get("split")
+        tr, te = r.get("train"), r["test"]
+        row: dict = {
+            "Detector":     name,
+            "N train":      sp["n_train"] if sp else "—",
+            "N test":       sp["n_test"]  if sp else "—",
+            "AUC (tr)":     _fmt(tr, "auc"),
+            "AUC (te)":     _fmt(te, "auc"),
+            "F1 (tr)":      _fmt(tr, "f1"),
+            "F1 (te)":      _fmt(te, "f1"),
+        }
+        for tname in type_names:
+            short = tname[:4]
+            row[f"{short} (tr)"] = _fmt(tr, "type_aucs", tname)
+            row[f"{short} (te)"] = _fmt(te, "type_aucs", tname)
+        rows.append(row)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
     if missing_slots:
         st.caption(

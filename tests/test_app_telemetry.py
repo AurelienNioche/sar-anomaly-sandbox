@@ -503,11 +503,9 @@ def test_comparison_tab_reuses_stat_scores_without_rerunning() -> None:
     at.run()
     assert not at.exception
 
-    assert len(at.table) > 0, "Expected metrics table in Comparison tab"
-    # at.table[-1] is the Comparison metrics table; earlier tables belong to
-    # the Visualize tab (channel stats) and the Statistical tab (per-type AUC).
-    assert "Mahalanobis" in str(at.table[-1].value), (
-        f"Mahalanobis not found in comparison table; got: {at.table[-1].value}"
+    assert len(at.dataframe) > 0, "Expected a dataframe in Comparison tab"
+    assert "Mahalanobis" in str(at.dataframe[-1].value), (
+        f"Mahalanobis not found in comparison dataframe; got: {at.dataframe[-1].value}"
     )
 
 
@@ -567,8 +565,8 @@ def test_comparison_deep_slots_are_independent() -> None:
     assert "tel_cmp_run" in button_keys, (
         "Run missing button must appear when Transformer AE and MLP AE are not yet run"
     )
-    table_str = str(at.table[-1].value)
-    assert "LSTM Autoencoder" in table_str, (
+    assert len(at.dataframe) > 0
+    assert "LSTM Autoencoder" in str(at.dataframe[-1].value), (
         "LSTM Autoencoder must be visible in comparison once its slot is filled"
     )
 
@@ -623,12 +621,11 @@ def test_comparison_tab_no_run_missing_button_when_all_run() -> None:
         "'Run missing detectors' button must be absent when all slots are filled"
     )
 
-    assert len(at.table) > 0
-    # at.table[-1] is the Comparison metrics table (last in page order)
-    table_str = str(at.table[-1].value)
+    assert len(at.dataframe) > 0
+    df_str = str(at.dataframe[-1].value)
     for name in ("Mahalanobis", "Isolation Forest", "LSTM Autoencoder",
                  "Transformer Autoencoder", "MLP Autoencoder"):
-        assert name in table_str, f"'{name}' not found in comparison table"
+        assert name in df_str, f"'{name}' not found in comparison dataframe"
 
 
 # ---------------------------------------------------------------------------
