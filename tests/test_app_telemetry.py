@@ -469,11 +469,15 @@ def _pre_run_detector(
     Both the individual detector tab AND the comparison tab read these keys, so
     the test must supply the complete set to avoid KeyError crashes.
     """
+    n_test = test_series.shape[0]
     session_state[f"{tab_key}_scores"] = scores
     session_state[f"{tab_key}_labels_mc"] = labels_mc_flat
     session_state[f"{tab_key}_test_tel"] = test_series
     session_state[f"{tab_key}_test_labels_mc"] = test_labels_mc
     session_state[f"{tab_key}_det_ran"] = det_name
+    session_state[f"{tab_key}_split_info"] = {
+        "n_train": n_test, "n_test": n_test, "n_total": n_test * 2,
+    }
 
 
 def test_comparison_tab_reuses_stat_scores_without_rerunning() -> None:

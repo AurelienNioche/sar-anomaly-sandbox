@@ -283,10 +283,10 @@ def _detector_tab(
         st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
         st.session_state[f"{tab_key}_det_ran"] = detector_name
+        st.session_state[f"{tab_key}_split_info"] = {
+            "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
+        }
         st.session_state.pop(f"{tab_key}_threshold", None)
-        st.caption(
-            f"Trained on {len(train_idx)}/{n} series, scored on {len(test_idx)}/{n} series."
-        )
 
     if f"{tab_key}_scores" not in st.session_state:
         st.info("Click **Run** to fit and score.")
@@ -315,6 +315,13 @@ def _detector_results_section(
         test_tel      : (M, T, C) test series for time series display
         test_labels_mc: (M, T) per-series multi-class labels for display
     """
+    split = st.session_state.get(f"{tab_key}_split_info")
+    if split:
+        st.info(
+            f"Train: **{split['n_train']} / {split['n_total']}** series  ·  "
+            f"Test (evaluated here): **{split['n_test']} / {split['n_total']}** series"
+        )
+
     y_true_bin = (labels_mc > 0).long().numpy()
     y_score = scores.numpy()
 
@@ -692,6 +699,9 @@ def tab_deep() -> None:
         st.session_state["tel_deep_test_labels_mc"] = labels_mc[test_idx]
         st.session_state["tel_deep_det_ran"] = det_name
         st.session_state["tel_deep_losses"] = det.train_losses
+        st.session_state["tel_deep_split_info"] = {
+            "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
+        }
         st.session_state.pop("tel_deep_threshold", None)
 
         # Also write to the per-detector comparison key so the Comparison tab
@@ -702,6 +712,9 @@ def tab_deep() -> None:
         st.session_state[f"{cmp_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{cmp_key}_test_labels_mc"] = labels_mc[test_idx]
         st.session_state[f"{cmp_key}_det_ran"] = det_name
+        st.session_state[f"{cmp_key}_split_info"] = {
+            "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
+        }
         st.caption(
             f"Trained on {len(train_idx)}/{n} series, scored on {len(test_idx)}/{n} series."
         )
@@ -756,7 +769,8 @@ def _cmp_metrics_from_state(tab_key: str) -> dict | None:
         if candidate > best_f1:
             best_f1 = candidate
     fpr, tpr, _ = roc_curve(y_true, y_score)
-    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr}
+    split = st.session_state.get(f"{tab_key}_split_info")
+    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr, "split": split}
 
 
 def _cmp_run_and_store(
@@ -773,11 +787,15 @@ def _cmp_run_and_store(
     n_t, n_c = telemetry.shape[1], telemetry.shape[2]
     test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
     scores = detector.score(test_tel)
+    n = telemetry.shape[0]
     st.session_state[f"{tab_key}_scores"] = scores
     st.session_state[f"{tab_key}_labels_mc"] = labels_mc[test_idx].reshape(-1)
     st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
     st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
     st.session_state[f"{tab_key}_det_ran"] = det_name
+    st.session_state[f"{tab_key}_split_info"] = {
+        "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
+    }
     st.session_state.pop(f"{tab_key}_threshold", None)
 
 
@@ -889,10 +907,18 @@ def tab_comparison() -> None:
 
     with col2:
         st.subheader("Metrics Table")
-        rows = [
-            {"Detector": name, "AUC": f"{r['auc']:.3f}", "Best F1": f"{r['f1']:.3f}"}
-            for name, r in results.items()
-        ]
+        rows = []
+        for name, r in results.items():
+            sp = r.get("split")
+            train_col = f"{sp['n_train']}/{sp['n_total']}" if sp else "—"
+            test_col  = f"{sp['n_test']}/{sp['n_total']}"  if sp else "—"
+            rows.append({
+                "Detector": name,
+                "Train series": train_col,
+                "Test series": test_col,
+                "AUC": f"{r['auc']:.3f}",
+                "Best F1": f"{r['f1']:.3f}",
+            })
         st.table(rows)
 
     if missing_slots:
