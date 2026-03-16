@@ -318,8 +318,8 @@ def _detector_results_section(
     split = st.session_state.get(f"{tab_key}_split_info")
     if split:
         st.info(
-            f"Train: **{split['n_train']} / {split['n_total']}** series  ·  "
-            f"Test (evaluated here): **{split['n_test']} / {split['n_total']}** series"
+            f"Train: **{split['n_train']}** series  ·  "
+            f"Test (evaluated here): **{split['n_test']}** series"
         )
 
     y_true_bin = (labels_mc > 0).long().numpy()
@@ -770,7 +770,21 @@ def _cmp_metrics_from_state(tab_key: str) -> dict | None:
             best_f1 = candidate
     fpr, tpr, _ = roc_curve(y_true, y_score)
     split = st.session_state.get(f"{tab_key}_split_info")
-    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr, "split": split}
+    labels_np = labels_t.numpy()
+    type_aucs: dict[str, float] = {}
+    for type_id, type_name in _TYPE_NAMES.items():
+        mask = (labels_np == 0) | (labels_np == type_id)
+        if mask.sum() == 0 or (labels_np == type_id).sum() == 0:
+            type_aucs[type_name] = float("nan")
+            continue
+        try:
+            type_aucs[type_name] = roc_auc_score(
+                (labels_np[mask] == type_id).astype(int), y_score[mask]
+            )
+        except ValueError:
+            type_aucs[type_name] = float("nan")
+    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr,
+            "split": split, "type_aucs": type_aucs}
 
 
 def _cmp_run_and_store(
@@ -905,21 +919,23 @@ def tab_comparison() -> None:
         st.pyplot(fig)
         plt.close()
 
-    with col2:
-        st.subheader("Metrics Table")
-        rows = []
-        for name, r in results.items():
-            sp = r.get("split")
-            train_col = f"{sp['n_train']}/{sp['n_total']}" if sp else "—"
-            test_col  = f"{sp['n_test']}/{sp['n_total']}"  if sp else "—"
-            rows.append({
-                "Detector": name,
-                "Train series": train_col,
-                "Test series": test_col,
-                "AUC": f"{r['auc']:.3f}",
-                "Best F1": f"{r['f1']:.3f}",
-            })
-        st.table(rows)
+    st.subheader("Metrics Table")
+    type_names = [_TYPE_NAMES[tid] for tid in sorted(_TYPE_NAMES)]
+    rows = []
+    for name, r in results.items():
+        sp = r.get("split")
+        row: dict = {
+            "Detector": name,
+            "Train": sp["n_train"] if sp else "—",
+            "Test": sp["n_test"] if sp else "—",
+            "AUC": f"{r['auc']:.3f}",
+            "Best F1": f"{r['f1']:.3f}",
+        }
+        for tname in type_names:
+            v = r.get("type_aucs", {}).get(tname, float("nan"))
+            row[f"AUC {tname}"] = "—" if np.isnan(v) else f"{v:.3f}"
+        rows.append(row)
+    st.table(rows)
 
     if missing_slots:
         st.caption(
