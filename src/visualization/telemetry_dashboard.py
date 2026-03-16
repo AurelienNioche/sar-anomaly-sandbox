@@ -979,9 +979,9 @@ def tab_comparison() -> None:
 
     def _color_split(col: pd.Series) -> list[str]:
         if col.name in tr_cols:
-            return ["background-color: #dbeafe"] * len(col)  # blue-100
+            return ["background-color: #1d4ed8; color: #ffffff"] * len(col)  # blue-700
         if col.name in te_cols:
-            return ["background-color: #dcfce7"] * len(col)  # green-100
+            return ["background-color: #15803d; color: #ffffff"] * len(col)  # green-700
         return [""] * len(col)
 
     st.dataframe(df.style.apply(_color_split), width="stretch", hide_index=True)
