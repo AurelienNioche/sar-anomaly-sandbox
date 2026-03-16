@@ -278,8 +278,11 @@ def _detector_tab(
         test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
         test_labels_mc = labels_mc[test_idx].reshape(-1)
         scores = det.score(test_tel)
+        train_scores = det.score(train_data)
         st.session_state[f"{tab_key}_scores"] = scores
         st.session_state[f"{tab_key}_labels_mc"] = test_labels_mc
+        st.session_state[f"{tab_key}_train_scores"] = train_scores
+        st.session_state[f"{tab_key}_train_labels_mc"] = labels_mc[train_idx].reshape(-1)
         st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
         st.session_state[f"{tab_key}_det_ran"] = detector_name
@@ -693,8 +696,11 @@ def tab_deep() -> None:
                 ).fit(train_data)
 
         scores = det.score(test_tel)
+        train_scores = det.score(train_data)
         st.session_state["tel_deep_scores"] = scores
         st.session_state["tel_deep_labels_mc"] = test_labels_mc
+        st.session_state["tel_deep_train_scores"] = train_scores
+        st.session_state["tel_deep_train_labels_mc"] = labels_mc[train_idx].reshape(-1)
         st.session_state["tel_deep_test_tel"] = telemetry[test_idx]
         st.session_state["tel_deep_test_labels_mc"] = labels_mc[test_idx]
         st.session_state["tel_deep_det_ran"] = det_name
@@ -709,6 +715,8 @@ def tab_deep() -> None:
         cmp_key = _DEEP_CMP_KEY[det_name]
         st.session_state[f"{cmp_key}_scores"] = scores
         st.session_state[f"{cmp_key}_labels_mc"] = test_labels_mc
+        st.session_state[f"{cmp_key}_train_scores"] = train_scores
+        st.session_state[f"{cmp_key}_train_labels_mc"] = labels_mc[train_idx].reshape(-1)
         st.session_state[f"{cmp_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{cmp_key}_test_labels_mc"] = labels_mc[test_idx]
         st.session_state[f"{cmp_key}_det_ran"] = det_name
@@ -749,15 +757,11 @@ def tab_deep() -> None:
     )
 
 
-def _cmp_metrics_from_state(tab_key: str) -> dict | None:
-    """Return AUC / best-F1 / ROC data for a detector already scored in session state.
-
-    Returns None if no scores are stored for *tab_key* yet.
-    """
-    if f"{tab_key}_scores" not in st.session_state:
-        return None
-    scores_t = st.session_state[f"{tab_key}_scores"]
-    labels_t = st.session_state[f"{tab_key}_labels_mc"]
+def _compute_split_metrics(
+    scores_t: torch.Tensor,
+    labels_t: torch.Tensor,
+) -> dict:
+    """Compute AUC, best-F1, ROC curve, and per-type AUC for one split."""
     y_true = (labels_t > 0).long().numpy()
     y_score = scores_t.numpy()
     auc = roc_auc_score(y_true, y_score)
@@ -769,7 +773,6 @@ def _cmp_metrics_from_state(tab_key: str) -> dict | None:
         if candidate > best_f1:
             best_f1 = candidate
     fpr, tpr, _ = roc_curve(y_true, y_score)
-    split = st.session_state.get(f"{tab_key}_split_info")
     labels_np = labels_t.numpy()
     type_aucs: dict[str, float] = {}
     for type_id, type_name in _TYPE_NAMES.items():
@@ -783,8 +786,28 @@ def _cmp_metrics_from_state(tab_key: str) -> dict | None:
             )
         except ValueError:
             type_aucs[type_name] = float("nan")
-    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr,
-            "split": split, "type_aucs": type_aucs}
+    return {"auc": auc, "f1": best_f1, "fpr": fpr, "tpr": tpr, "type_aucs": type_aucs}
+
+
+def _cmp_metrics_from_state(tab_key: str) -> dict | None:
+    """Return train + test metrics for a detector stored in session state.
+
+    Returns None if no test scores are present yet.
+    """
+    if f"{tab_key}_scores" not in st.session_state:
+        return None
+    test = _compute_split_metrics(
+        st.session_state[f"{tab_key}_scores"],
+        st.session_state[f"{tab_key}_labels_mc"],
+    )
+    train = None
+    if f"{tab_key}_train_scores" in st.session_state:
+        train = _compute_split_metrics(
+            st.session_state[f"{tab_key}_train_scores"],
+            st.session_state[f"{tab_key}_train_labels_mc"],
+        )
+    split = st.session_state.get(f"{tab_key}_split_info")
+    return {"test": test, "train": train, "split": split}
 
 
 def _cmp_run_and_store(
@@ -795,15 +818,18 @@ def _cmp_run_and_store(
     labels_mc: torch.Tensor,
     train_frac: float,
 ) -> None:
-    """Fit *detector*, score the test split, and store results under *tab_key*."""
+    """Fit *detector*, score both splits, and store results under *tab_key*."""
     train_data, train_idx, test_idx = _train_test_split(telemetry, train_frac)
     detector.fit(train_data)
     n_t, n_c = telemetry.shape[1], telemetry.shape[2]
     test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
     scores = detector.score(test_tel)
+    train_scores = detector.score(train_data)
     n = telemetry.shape[0]
     st.session_state[f"{tab_key}_scores"] = scores
     st.session_state[f"{tab_key}_labels_mc"] = labels_mc[test_idx].reshape(-1)
+    st.session_state[f"{tab_key}_train_scores"] = train_scores
+    st.session_state[f"{tab_key}_train_labels_mc"] = labels_mc[train_idx].reshape(-1)
     st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
     st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
     st.session_state[f"{tab_key}_det_ran"] = det_name
@@ -905,37 +931,42 @@ def tab_comparison() -> None:
         st.info("No detectors have been run yet. Use the Statistical, ML, and Deep tabs.")
         return
 
-    # --- Render ROC + table -----------------------------------------------
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("ROC Curves")
-        fig, ax = plt.subplots(figsize=(6, 5))
-        for name, r in results.items():
-            ax.plot(r["fpr"], r["tpr"], label=f"{name} (AUC={r['auc']:.2f})")
-        ax.plot([0, 1], [0, 1], "k--")
-        ax.set_xlabel("FPR")
-        ax.set_ylabel("TPR")
-        ax.legend(fontsize=8)
-        st.pyplot(fig)
-        plt.close()
-
-    st.subheader("Metrics Table")
     type_names = [_TYPE_NAMES[tid] for tid in sorted(_TYPE_NAMES)]
-    rows = []
-    for name, r in results.items():
+
+    def _metrics_row(name: str, r: dict, m: dict | None) -> dict:
         sp = r.get("split")
         row: dict = {
             "Detector": name,
-            "Train": sp["n_train"] if sp else "—",
-            "Test": sp["n_test"] if sp else "—",
-            "AUC": f"{r['auc']:.3f}",
-            "Best F1": f"{r['f1']:.3f}",
+            "N series": sp["n_train"] if sp else "—",
+            "AUC": f"{m['auc']:.3f}" if m else "—",
+            "Best F1": f"{m['f1']:.3f}" if m else "—",
         }
         for tname in type_names:
-            v = r.get("type_aucs", {}).get(tname, float("nan"))
-            row[f"AUC {tname}"] = "—" if np.isnan(v) else f"{v:.3f}"
-        rows.append(row)
-    st.table(rows)
+            v = (m or {}).get("type_aucs", {}).get(tname, float("nan"))
+            row[f"AUC {tname}"] = "—" if (m is None or np.isnan(v)) else f"{v:.3f}"
+        return row
+
+    # --- ROC curves (test split) ------------------------------------------
+    st.subheader("ROC Curves — Test split")
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for name, r in results.items():
+        t = r["test"]
+        ax.plot(t["fpr"], t["tpr"], label=f"{name} (AUC={t['auc']:.2f})")
+    ax.plot([0, 1], [0, 1], "k--")
+    ax.set_xlabel("FPR")
+    ax.set_ylabel("TPR")
+    ax.legend(fontsize=8)
+    st.pyplot(fig)
+    plt.close()
+
+    # --- Two metric tables ------------------------------------------------
+    col_tr, col_te = st.columns(2)
+    with col_tr:
+        st.subheader("Training metrics")
+        st.table([_metrics_row(n, r, r.get("train")) for n, r in results.items()])
+    with col_te:
+        st.subheader("Test metrics")
+        st.table([_metrics_row(n, r, r["test"]) for n, r in results.items()])
 
     if missing_slots:
         st.caption(
