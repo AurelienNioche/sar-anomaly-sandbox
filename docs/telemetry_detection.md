@@ -264,6 +264,81 @@ Output (window, C)
 
 ---
 
+### 2.7 TransformerAutoencoderDetector (deep)
+
+**How it works.** Same sliding-window reconstruction scheme as the LSTM, but the backbone is a Transformer encoder with sinusoidal positional encoding. Each position in the window attends to all other positions in parallel — there is no sequential hidden state carried from one position to the next. The per-timestep score is computed by averaging reconstruction MSE over all overlapping windows, identical to the LSTM.
+
+**Architecture.**
+
+```
+Input  (window, C)
+  → Linear projection     → (window, d_model)
+  → Sinusoidal pos. enc.
+  → TransformerEncoder    → (window, d_model)   [full self-attention, O(W²)]
+  → Linear projection     → (window, C)
+Output (window, C)
+```
+
+**Memory model.** No hidden state at inference: the model processes the entire window in a single forward pass. This makes it trivially batchable and parallelisable, and avoids the sequential dependency that makes LSTM inference hard to accelerate on modern hardware.
+
+**Strengths.**
+- Parallelises well — no sequential dependency within a window.
+- Self-attention naturally captures cross-channel correlations over the window.
+- Detects all four anomaly types, including `correlation_break`.
+
+**Weaknesses.**
+- Attention is O(W²) in window length. Fine for the short windows used here (≤ 100 steps), but would need efficient attention for very long contexts.
+- Requires `d_model` to be divisible by `nhead` (standard Transformer constraint).
+
+**Expected performance on default config (`d_model=32`, `nhead=4`, `n_epochs=20`).**
+
+| Metric | Value |
+|---|---|
+| AUC | ≈ 0.90 |
+| Best-F1 precision | ≈ 0.75 |
+| Best-F1 recall | ≈ 0.72 |
+
+**When to choose it.** Good alternative to the LSTM when you want parallelisable inference or suspect long-range within-window dependencies.
+
+---
+
+### 2.8 MLPAutoencoderDetector (deep, no memory)
+
+**How it works.** A bottleneck feedforward autoencoder trained on individual timesteps. Each timestep is treated as an independent C-dimensional point with no temporal context whatsoever. The model learns the normal feature-space manifold; anomalies that deviate from it produce high reconstruction MSE.
+
+**Architecture.**
+
+```
+Input  (C,)
+  → Linear(C → hidden) → ReLU → Linear(hidden → hidden//2)     [encoder]
+  → Linear(hidden//2 → hidden) → ReLU → Linear(hidden → C)     [decoder]
+Output (C,)
+```
+
+**Memory model.** Strictly zero: no window, no convolution, no recurrence. Each timestep is scored independently of all others. Training and inference are purely pointwise operations.
+
+**Strengths.**
+- Extremely fast to train and score (no windowing overhead).
+- Detects **spikes** very well — they are large per-timestep deviations.
+- Can detect **step anomalies** once the channel value has drifted far enough from the training mean.
+- Generalises cleanly across series with no statefulness to carry over.
+
+**Weaknesses.**
+- **Cannot detect ramps** reliably: each individual timestep of a gradual ramp still lies within the training distribution; only the tail (≥ 4σ) produces high error.
+- **Cannot detect correlation breaks**: a correlation break changes the joint channel distribution but leaves per-channel marginal distributions intact. The per-timestep MLP score is near chance on correlation_break-only data (AUC ≈ 0.54).
+
+**Expected performance on default config (`hidden_size=32`, `n_epochs=20`).**
+
+| Metric | Value |
+|---|---|
+| AUC (mixed data) | ≈ 0.72 |
+| AUC (spike-only) | ≈ 0.82 |
+| AUC (correlation_break only) | ≈ 0.54 (near chance — documented limitation) |
+
+**When to choose it.** You need very fast inference, your anomalies are primarily spikes or out-of-range steps, and you are not concerned with gradual drifts or correlation changes.
+
+---
+
 ## 3. Detector Comparison
 
 ### Default config (`noise_std=0.05`, all 4 anomaly types)
@@ -276,6 +351,8 @@ Output (window, C)
 | IsolationForestDetector | 0.73 | 0.14 | 0.62 | Weak: dimensionality curse |
 | OneClassSVMDetector | 0.79 | 0.88 | 0.38 | Good precision |
 | **LSTMAutoencoderDetector** | **0.95** | **0.80** | **0.78** | Best overall |
+| TransformerAutoencoderDetector | ≈ 0.90 | ≈ 0.75 | ≈ 0.72 | Parallel inference, no hidden state |
+| MLPAutoencoderDetector | ≈ 0.72 | ≈ 0.70 | ≈ 0.55 | No memory; fast; blind to ramps and correlation_break |
 
 ### Choosing anomaly types only (`correlation_break` removed)
 
@@ -307,10 +384,14 @@ Training split has ≈ 80 normal samples after the 50% split. Expect LSTM to str
 Is the channel stationary (no orbital sine)?
   YES → CUSUMDetector for step/drift; PerChannelZScore for spikes
   NO  ↓
+Are your anomalies only spikes / out-of-range steps (no ramps, no correlation_break)?
+  YES → MLPAutoencoderDetector (no memory, very fast, excels at point deviations)
+  NO  ↓
 Do you need to detect correlation_break?
-  NO  → PerChannelZScore (fast, high precision on spikes/steps)
+  NO  → PerChannelZScore (fast, high precision on spikes/steps/ramps)
   YES ↓
 Do you have training time budget?
   NO  → MahalanobisDetector (best statistical, no training loop)
   YES → LSTMAutoencoderDetector (best overall, all anomaly types)
+        TransformerAutoencoderDetector (similar AUC, parallelises better at inference)
 ```

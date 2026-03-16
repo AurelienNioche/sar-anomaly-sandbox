@@ -15,7 +15,11 @@ from src.data.generators.telemetry import (
 )
 from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZScore
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
-from src.models.deep import LSTMAutoencoderDetector
+from src.models.deep import (
+    LSTMAutoencoderDetector,
+    MLPAutoencoderDetector,
+    TransformerAutoencoderDetector,
+)
 from src.utils.metrics import best_f1_threshold as _best_f1_threshold
 from src.visualization.data_io import (
     list_runs,
@@ -592,12 +596,31 @@ def tab_ml() -> None:
     )
 
 
-def tab_deep() -> None:
-    st.header("LSTM Autoencoder")
-    st.markdown(
-        "Trains an LSTM encoder-decoder on normal windows. "
+_DEEP_DETECTOR_NAMES = [
+    "LSTM Autoencoder",
+    "Transformer Autoencoder",
+    "MLP Autoencoder",
+]
+
+_DEEP_DETECTOR_DESCRIPTIONS: dict[str, str] = {
+    "LSTM Autoencoder": (
+        "Trains an LSTM encoder-decoder on sliding windows. "
         "Anomaly score = per-timestep reconstruction MSE."
-    )
+    ),
+    "Transformer Autoencoder": (
+        "Self-attention over each window — no sequential hidden state. "
+        "Parallelises well; captures long-range intra-window dependencies."
+    ),
+    "MLP Autoencoder": (
+        "No memory: each timestep is scored independently as a C-dimensional point. "
+        "Fast to train; detects spikes and correlation breaks but not gradual ramps."
+    ),
+}
+
+
+def tab_deep() -> None:
+    st.header("Deep Detectors")
+    st.markdown("Neural network autoencoders trained on normal windows (or individual timesteps).")
 
     result = _load_data()
     if result is None:
@@ -606,31 +629,59 @@ def tab_deep() -> None:
     telemetry, labels_mc = result
 
     n = telemetry.shape[0]
+
+    det_name = st.selectbox(
+        "Detector",
+        _DEEP_DETECTOR_NAMES,
+        key="tel_deep_det",
+    )
+    st.caption(_DEEP_DETECTOR_DESCRIPTIONS[det_name])
+
     train_frac = st.slider(
         "Training series fraction", 0.1, 0.9, 0.5, 0.05, key="tel_deep_frac",
         help="Fraction of series used for training. No labels are used — split is random.",
     )
 
-    col1, col2, col3 = st.columns(3)
-    window = col1.slider("Window", 10, 100, 30, key="tel_deep_window")
-    hidden = col2.slider("Hidden size", 8, 128, 32, key="tel_deep_hidden")
-    epochs = col3.slider("Epochs", 5, 100, 20, key="tel_deep_epochs")
+    uses_window = det_name != "MLP Autoencoder"
+    if uses_window:
+        col1, col2, col3 = st.columns(3)
+        window = col1.slider("Window", 10, 100, 30, key="tel_deep_window")
+        hidden = col2.slider("Hidden size", 8, 128, 32, key="tel_deep_hidden")
+        epochs = col3.slider("Epochs", 5, 100, 20, key="tel_deep_epochs")
+    else:
+        col1, col2 = st.columns(2)
+        hidden = col1.slider("Hidden size", 8, 128, 32, key="tel_deep_hidden")
+        epochs = col2.slider("Epochs", 5, 100, 20, key="tel_deep_epochs")
+        window = 1  # unused for MLP
 
     if st.button("Train & Score", key="tel_deep_run"):
         train_data, train_idx, test_idx = _train_test_split(telemetry, train_frac)
-        with st.spinner("Training LSTM autoencoder…"):
-            det = LSTMAutoencoderDetector(
-                window=window, hidden_size=hidden, n_epochs=epochs
-            ).fit(train_data)
         n_t, n_c = telemetry.shape[1], telemetry.shape[2]
         test_tel = telemetry[test_idx].reshape(len(test_idx) * n_t, n_c)
         test_labels_mc = labels_mc[test_idx].reshape(-1)
+
+        if det_name == "LSTM Autoencoder":
+            with st.spinner("Training LSTM autoencoder…"):
+                det = LSTMAutoencoderDetector(
+                    window=window, hidden_size=hidden, n_epochs=epochs
+                ).fit(train_data)
+        elif det_name == "Transformer Autoencoder":
+            with st.spinner("Training Transformer autoencoder…"):
+                det = TransformerAutoencoderDetector(
+                    window=window, d_model=hidden, n_epochs=epochs
+                ).fit(train_data)
+        else:
+            with st.spinner("Training MLP autoencoder…"):
+                det = MLPAutoencoderDetector(
+                    hidden_size=hidden, n_epochs=epochs
+                ).fit(train_data)
+
         scores = det.score(test_tel)
         st.session_state["tel_deep_scores"] = scores
         st.session_state["tel_deep_labels_mc"] = test_labels_mc
         st.session_state["tel_deep_test_tel"] = telemetry[test_idx]
         st.session_state["tel_deep_test_labels_mc"] = labels_mc[test_idx]
-        st.session_state["tel_deep_det_ran"] = "LSTM Autoencoder"
+        st.session_state["tel_deep_det_ran"] = det_name
         st.session_state["tel_deep_losses"] = det.train_losses
         st.session_state.pop("tel_deep_threshold", None)
         st.caption(

@@ -26,6 +26,8 @@ src/
       telemetry_ml.py             # IsolationForestDetector, OneClassSVMDetector
     deep/
       lstm_autoencoder.py         # LSTMAutoencoderDetector
+      transformer_autoencoder.py  # TransformerAutoencoderDetector
+      mlp_autoencoder.py          # MLPAutoencoderDetector
   utils/
     config.py       # load_config(path) — YAML → dict
     metrics.py      # _best_f1_threshold — shared metric helper

@@ -328,6 +328,99 @@ def test_higher_noise_degrades_all_detectors():
     )
 
 
+# ---------------------------------------------------------------------------
+# TransformerAutoencoderDetector — no hidden state, parallel attention
+# ---------------------------------------------------------------------------
+
+def test_transformer_auc_floor():
+    """TransformerAutoencoderDetector must achieve AUC ≥ 0.80 on default mixed data.
+    Lower than the LSTM floor because the Transformer is given fewer epochs (20) and
+    a smaller d_model (32) to keep CI fast, but it must still be clearly useful."""
+    from src.models.deep import TransformerAutoencoderDetector
+    train, data, labels = _default_data()
+    det = TransformerAutoencoderDetector(
+        window=20, d_model=32, nhead=4, n_epochs=20
+    ).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc >= 0.80, f"TransformerAE AUC={auc:.3f} < 0.80 floor"
+
+
+def test_transformer_comparable_to_lstm():
+    """Transformer AUC must be within 0.10 of LSTM AUC on default data.
+    Both share identical windowing and scoring logic; only the backbone differs."""
+    from src.models.deep import LSTMAutoencoderDetector, TransformerAutoencoderDetector
+    train, data, labels = _default_data()
+    y = labels.numpy()
+    lstm_auc = roc_auc_score(
+        y, LSTMAutoencoderDetector(window=20, hidden_size=32, n_epochs=20).fit(train)
+           .score(data).numpy()
+    )
+    tr_auc = roc_auc_score(
+        y, TransformerAutoencoderDetector(window=20, d_model=32, nhead=4, n_epochs=20)
+           .fit(train).score(data).numpy()
+    )
+    assert abs(tr_auc - lstm_auc) <= 0.10, (
+        f"TransformerAE AUC={tr_auc:.3f} differs from LSTM AUC={lstm_auc:.3f} by "
+        f"{abs(tr_auc - lstm_auc):.3f} > 0.10"
+    )
+
+
+def test_transformer_detects_correlation_break():
+    """TransformerAE uses cross-position attention, so it should detect
+    correlation_break anomalies (AUC > 0.65)."""
+    from src.models.deep import TransformerAutoencoderDetector
+    train, data, labels = _default_data(seed=99, anomaly_types=["correlation_break"])
+    det = TransformerAutoencoderDetector(
+        window=20, d_model=32, nhead=4, n_epochs=20
+    ).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc > 0.65, (
+        f"TransformerAE AUC={auc:.3f} on correlation_break — expected > 0.65"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MLPAutoencoderDetector — no memory, per-timestep scoring
+# ---------------------------------------------------------------------------
+
+def test_mlp_auc_floor_mixed():
+    """MLPAutoencoderDetector must achieve AUC ≥ 0.65 on default mixed data.
+    Lower floor than sequence models: spikes are very visible but gradual ramps
+    are not, so the aggregate across types is moderate."""
+    from src.models.deep import MLPAutoencoderDetector
+    train, data, labels = _default_data()
+    det = MLPAutoencoderDetector(hidden_size=32, n_epochs=20).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc >= 0.65, f"MLPAE AUC={auc:.3f} < 0.65 floor on mixed data"
+
+
+def test_mlp_auc_floor_spikes():
+    """MLPAutoencoderDetector must achieve AUC ≥ 0.75 on spike-only data.
+    Spikes are large point deviations — exactly the regime the MLP excels at."""
+    from src.models.deep import MLPAutoencoderDetector
+    train, data, labels = _default_data(anomaly_types=["spike"])
+    det = MLPAutoencoderDetector(hidden_size=32, n_epochs=20).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc >= 0.75, f"MLPAE AUC={auc:.3f} < 0.75 on spike-only data"
+
+
+def test_mlp_blind_to_correlation_break():
+    """MLPAutoencoderDetector is documented as unreliable on correlation_break.
+    A correlation break changes the joint channel distribution but leaves
+    individual channel marginals intact, so per-timestep reconstruction MSE
+    stays near chance.  AUC must be ≤ 0.65 (near random)."""
+    from src.models.deep import MLPAutoencoderDetector
+    train, data, labels = _default_data(
+        seed=99, anomaly_types=["correlation_break"]
+    )
+    det = MLPAutoencoderDetector(hidden_size=32, n_epochs=20).fit(train)
+    auc = roc_auc_score(labels.numpy(), det.score(data).numpy())
+    assert auc <= 0.65, (
+        f"MLPAE AUC={auc:.3f} on correlation_break — expected ≤ 0.65 "
+        f"(no-memory detector should be blind to joint-distribution changes)"
+    )
+
+
 def test_removing_correlation_break_improves_zscore():
     """Removing correlation_break from anomaly types must improve ZScore AUC
     by at least 0.05 (since it was the main source of missed anomalies)."""

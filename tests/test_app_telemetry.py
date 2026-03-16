@@ -579,3 +579,85 @@ def test_comparison_tab_no_run_missing_button_when_all_run() -> None:
     table_str = str(at.table[-1].value)
     for name in ("Mahalanobis", "Isolation Forest", "LSTM Autoencoder"):
         assert name in table_str, f"'{name}' not found in comparison table"
+
+
+# ---------------------------------------------------------------------------
+# 11. Deep tab — selectbox and window-slider behaviour
+# ---------------------------------------------------------------------------
+
+def test_deep_tab_has_detector_selectbox() -> None:
+    """Deep tab must render a selectbox to choose between LSTM / Transformer / MLP."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    selectbox_keys = [s.key for s in at.selectbox]
+    assert "tel_deep_det" in selectbox_keys, (
+        "Expected tel_deep_det selectbox in the Deep tab"
+    )
+
+
+def test_deep_tab_selectbox_options_include_all_three_detectors() -> None:
+    """The Deep tab selectbox must expose all three deep detector options."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    opts = at.selectbox(key="tel_deep_det").options
+    for expected in ("LSTM Autoencoder", "Transformer Autoencoder", "MLP Autoencoder"):
+        assert expected in opts, (
+            f"'{expected}' not in tel_deep_det selectbox options: {opts}"
+        )
+
+
+def test_deep_tab_window_slider_present_for_lstm() -> None:
+    """Window slider must be shown when LSTM Autoencoder is selected (default)."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    slider_keys = [s.key for s in at.slider]
+    assert "tel_deep_window" in slider_keys, (
+        "tel_deep_window slider must be present when LSTM is selected"
+    )
+
+
+def test_deep_tab_window_slider_hidden_for_mlp() -> None:
+    """Window slider must NOT be rendered when MLP Autoencoder is selected,
+    because the MLP has no window — rendering it would mislead the user."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    at.selectbox(key="tel_deep_det").select("MLP Autoencoder").run()
+    assert not at.exception
+    slider_keys = [s.key for s in at.slider]
+    assert "tel_deep_window" not in slider_keys, (
+        "tel_deep_window slider must be hidden when MLP Autoencoder is selected"
+    )
+
+
+def test_deep_tab_window_slider_present_for_transformer() -> None:
+    """Window slider must be shown when Transformer Autoencoder is selected."""
+    at = AppTest.from_file(APP_PATH).run()
+    assert not at.exception
+    at.selectbox(key="tel_deep_det").select("Transformer Autoencoder").run()
+    assert not at.exception
+    slider_keys = [s.key for s in at.slider]
+    assert "tel_deep_window" in slider_keys, (
+        "tel_deep_window slider must be present for Transformer Autoencoder"
+    )
+
+
+def test_deep_tab_no_crash_with_data_and_mlp_selected() -> None:
+    """Deep tab must not crash with a loaded dataset and MLP Autoencoder selected."""
+    saved_str, telemetry, labels_mc = _saved_run(n_series=4)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
+    at.selectbox(key="tel_deep_det").select("MLP Autoencoder").run()
+    assert not at.exception
+
+
+def test_deep_tab_no_crash_with_data_and_transformer_selected() -> None:
+    """Deep tab must not crash with a loaded dataset and Transformer AE selected."""
+    saved_str, telemetry, labels_mc = _saved_run(n_series=4)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["tel_active_run"] = saved_str
+    at.run()
+    assert not at.exception
+    at.selectbox(key="tel_deep_det").select("Transformer Autoencoder").run()
+    assert not at.exception
