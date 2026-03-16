@@ -25,7 +25,12 @@ from src.models.baselines import CUSUMDetector, MahalanobisDetector, PerChannelZ
 from src.models.classical import IsolationForestDetector, OneClassSVMDetector
 from src.models.deep import LSTMAutoencoderDetector
 from src.utils.config import load_config
-from src.visualization.data_io import load_tensors_from_dir, save_run
+from src.visualization.data_io import (
+    list_detector_runs,
+    load_tensors_from_dir,
+    save_detector_run,
+    save_run,
+)
 from src.visualization.telemetry_dashboard import (
     DEFAULT_DATA_DIR,
     GEN_DEFAULTS,
@@ -516,3 +521,80 @@ def test_detector_tab_logic_n20_does_not_crash() -> None:
     scores = det.score(test_tel)
     assert scores.shape == (len(test_idx) * n_t,)
     assert len(train_idx) + len(test_idx) == 20
+
+
+# ---------------------------------------------------------------------------
+# 12. Detector run persistence (save_detector_run / list_detector_runs)
+# ---------------------------------------------------------------------------
+
+def test_save_and_list_detector_run_roundtrip() -> None:
+    """A detector run saved to disk must be recoverable via list_detector_runs
+    with intact tensors and metadata."""
+    scores_test  = torch.rand(100)
+    labels_test  = torch.randint(0, 4, (100,))
+    scores_train = torch.rand(200)
+    labels_train = torch.randint(0, 4, (200,))
+    split_info   = {"n_train": 10, "n_test": 5, "n_total": 15}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dataset_dir = Path(tmp) / "2024-01-01_12-00-00"
+        dataset_dir.mkdir()
+
+        saved = save_detector_run(
+            dataset_dir, "tel_stat", "Mahalanobis",
+            scores_test, labels_test, scores_train, labels_train,
+            split_info, hyperparams={"window": 20},
+        )
+        assert (saved / "scores_test.pt").exists()
+        assert (saved / "metadata.json").exists()
+
+        runs = list_detector_runs(dataset_dir)
+        assert len(runs) == 1
+        r = runs[0]
+        assert r["metadata"]["detector_name"] == "Mahalanobis"
+        assert r["metadata"]["tab_key"] == "tel_stat"
+        assert r["metadata"]["dataset_run"] == dataset_dir.name
+        assert r["metadata"]["split_info"] == split_info
+        assert r["metadata"]["hyperparams"]["window"] == 20
+        assert torch.allclose(r["scores_test"], scores_test)
+        assert torch.allclose(r["labels_mc_test"], labels_test)
+        assert torch.allclose(r["scores_train"], scores_train)
+
+
+def test_list_detector_runs_returns_newest_first() -> None:
+    """list_detector_runs must return runs ordered newest first.
+
+    Uses microsecond-precision timestamps so two rapid saves don't collide.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        dataset_dir = Path(tmp) / "2024-01-01_12-00-00"
+        dataset_dir.mkdir()
+        dummy = torch.zeros(10)
+        split = {"n_train": 5, "n_test": 5, "n_total": 10}
+
+        save_detector_run(dataset_dir, "tel_stat", "First",  dummy, dummy, dummy, dummy, split)
+        save_detector_run(dataset_dir, "tel_stat", "Second", dummy, dummy, dummy, dummy, split)
+
+        runs = list_detector_runs(dataset_dir)
+        assert runs[0]["metadata"]["detector_name"] == "Second"
+        assert runs[1]["metadata"]["detector_name"] == "First"
+
+
+def test_list_detector_runs_skips_mismatched_dataset() -> None:
+    """Runs whose metadata.dataset_run doesn't match the directory name are skipped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dataset_dir = Path(tmp) / "correct_run"
+        dataset_dir.mkdir()
+        dummy = torch.zeros(10)
+        split = {"n_train": 5, "n_test": 5, "n_total": 10}
+
+        run_dir = save_detector_run(
+            dataset_dir, "tel_stat", "OK", dummy, dummy, dummy, dummy, split
+        )
+        import json
+        meta = json.loads((run_dir / "metadata.json").read_text())
+        meta["dataset_run"] = "wrong_run"
+        (run_dir / "metadata.json").write_text(json.dumps(meta))
+
+        runs = list_detector_runs(dataset_dir)
+        assert len(runs) == 0, "Mismatched run must not be returned"

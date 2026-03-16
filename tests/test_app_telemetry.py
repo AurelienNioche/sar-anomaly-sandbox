@@ -708,3 +708,74 @@ def test_deep_tab_no_crash_with_data_and_transformer_selected() -> None:
     assert not at.exception
     at.selectbox(key="tel_deep_det").select("Transformer Autoencoder").run()
     assert not at.exception
+
+
+# ---------------------------------------------------------------------------
+# 12. Detector run persistence — save on run, restore on dataset select
+# ---------------------------------------------------------------------------
+
+def test_detector_runs_restored_on_dataset_select() -> None:
+    """Saved detector runs must be loaded into session state when a dataset is
+    selected in the sidebar, so results survive a browser refresh.
+
+    The dataset must live in DEFAULT_DATA_DIR so _sidebar_run_selector picks
+    it up by name and calls _restore_detector_runs.
+    """
+    import shutil
+
+    from src.visualization.data_io import save_detector_run
+    from src.visualization.telemetry_dashboard import DEFAULT_DATA_DIR
+
+    telemetry, labels_mc = _gen(n_series=6)
+    dataset_dir = save_run(
+        {"telemetry.pt": telemetry, "labels.pt": labels_mc},
+        base_dir=DEFAULT_DATA_DIR,
+    )
+    n, n_t, n_c = telemetry.shape
+    k = n // 2
+    scores = torch.rand((n - k) * n_t)
+    labels_flat = labels_mc[k:].reshape(-1)
+
+    save_detector_run(
+        dataset_dir, "tel_stat", "Mahalanobis",
+        scores, labels_flat,
+        torch.rand(k * n_t), labels_mc[:k].reshape(-1),
+        {"n_train": k, "n_test": n - k, "n_total": n},
+        hyperparams={"window": 20},
+    )
+
+    try:
+        at = AppTest.from_file(APP_PATH)
+        at.session_state["tel_active_run"] = dataset_dir
+        at.run()
+        assert not at.exception
+        assert "tel_stat_scores" in at.session_state, (
+            "tel_stat_scores must be restored from disk when dataset is selected"
+        )
+        assert at.session_state["tel_stat_det_ran"] == "Mahalanobis"
+    finally:
+        shutil.rmtree(dataset_dir, ignore_errors=True)
+
+
+def test_clear_detector_state_removes_only_result_keys() -> None:
+    """_clear_detector_state must delete result keys (scores, labels_mc, …) while
+    leaving unrelated widget-state keys (tel_deep_det, etc.) intact."""
+    from streamlit.testing.v1 import AppTest
+
+    code = """
+import streamlit as st
+from src.visualization.telemetry_dashboard import _clear_detector_state
+
+st.session_state["tel_stat_scores"]      = "scores"
+st.session_state["tel_ml_det_ran"]       = "IF"
+st.session_state["tel_deep_det"]         = "LSTM Autoencoder"  # widget key — must survive
+st.session_state["unrelated_key"]        = "keep me"
+_clear_detector_state()
+"""
+    at = AppTest.from_string(code)
+    at.run()
+    assert not at.exception
+    ss = at.session_state
+    assert "tel_stat_scores" not in ss, "result key must be cleared"
+    assert "tel_ml_det_ran"  not in ss, "result key must be cleared"
+    assert "unrelated_key"   in ss,     "unrelated keys must survive"

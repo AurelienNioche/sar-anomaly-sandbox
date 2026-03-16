@@ -1,6 +1,7 @@
 """Shared disk I/O utilities for dashboard data loading and saving."""
 
 import io
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -97,3 +98,104 @@ def save_run(
     for filename, tensor in tensors.items():
         torch.save(tensor, save_dir / filename)
     return save_dir
+
+
+# ---------------------------------------------------------------------------
+# Detector-run persistence
+# ---------------------------------------------------------------------------
+
+def save_detector_run(
+    dataset_dir: Path,
+    tab_key: str,
+    det_name: str,
+    scores_test: torch.Tensor,
+    labels_mc_test: torch.Tensor,
+    scores_train: torch.Tensor,
+    labels_mc_train: torch.Tensor,
+    split_info: dict,
+    test_tel: torch.Tensor | None = None,
+    test_labels_mc: torch.Tensor | None = None,
+    hyperparams: dict | None = None,
+) -> Path:
+    """Persist detector scores and metadata under ``<dataset_dir>/detector_runs/``.
+
+    The ``metadata.json`` embeds ``dataset_run`` (the dataset directory name)
+    so that a run can always be matched back to the exact dataset it came from.
+
+    Returns the path of the newly created run directory.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    run_dir = dataset_dir / "detector_runs" / f"{timestamp}_{tab_key}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    torch.save(scores_test,    run_dir / "scores_test.pt")
+    torch.save(labels_mc_test, run_dir / "labels_mc_test.pt")
+    torch.save(scores_train,   run_dir / "scores_train.pt")
+    torch.save(labels_mc_train, run_dir / "labels_mc_train.pt")
+    if test_tel is not None:
+        torch.save(test_tel,       run_dir / "test_tel.pt")
+    if test_labels_mc is not None:
+        torch.save(test_labels_mc, run_dir / "test_labels_mc.pt")
+
+    metadata: dict = {
+        "detector_name": det_name,
+        "tab_key":       tab_key,
+        "dataset_run":   dataset_dir.name,
+        "split_info":    split_info,
+        "timestamp":     datetime.now().isoformat(),
+        "hyperparams":   hyperparams or {},
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    return run_dir
+
+
+def list_detector_runs(dataset_dir: Path) -> list[dict]:
+    """Return saved detector runs for *dataset_dir*, newest first.
+
+    Each entry is a dict with:
+      ``metadata``         – parsed metadata.json
+      ``scores_test``      – (M*T,) tensor
+      ``labels_mc_test``   – (M*T,) tensor
+      ``scores_train``     – (K*T,) tensor
+      ``labels_mc_train``  – (K*T,) tensor
+      ``test_tel``         – (M, T, C) tensor  (optional)
+      ``test_labels_mc``   – (M, T) tensor     (optional)
+
+    Entries whose metadata ``dataset_run`` does not match
+    ``dataset_dir.name`` are silently skipped (stale / misplaced files).
+    """
+    runs_dir = dataset_dir / "detector_runs"
+    if not runs_dir.exists():
+        return []
+
+    result: list[dict] = []
+    for d in sorted(runs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        meta_path = d / "metadata.json"
+        if not meta_path.exists():
+            continue
+        try:
+            metadata = json.loads(meta_path.read_text())
+        except Exception:
+            continue
+        if metadata.get("dataset_run") != dataset_dir.name:
+            continue
+
+        entry: dict = {"metadata": metadata}
+        for fname, key in [
+            ("scores_test.pt",    "scores_test"),
+            ("labels_mc_test.pt", "labels_mc_test"),
+            ("scores_train.pt",   "scores_train"),
+            ("labels_mc_train.pt","labels_mc_train"),
+            ("test_tel.pt",       "test_tel"),
+            ("test_labels_mc.pt", "test_labels_mc"),
+        ]:
+            path = d / fname
+            if path.exists():
+                try:
+                    entry[key] = torch.load(path, map_location="cpu", weights_only=True)
+                except Exception:
+                    pass
+        result.append(entry)
+    return result

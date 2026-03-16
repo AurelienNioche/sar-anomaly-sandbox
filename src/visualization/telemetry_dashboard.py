@@ -23,8 +23,10 @@ from src.models.deep import (
 )
 from src.utils.metrics import best_f1_threshold as _best_f1_threshold
 from src.visualization.data_io import (
+    list_detector_runs,
     list_runs,
     load_tensor,
+    save_detector_run,
     save_run,
 )
 
@@ -51,6 +53,58 @@ _TYPE_COLORS: dict[int, str] = {
     ANOMALY_TYPE_IDS["correlation_break"]: "purple",
 }
 _TYPE_NAMES: dict[int, str] = {v: k for k, v in ANOMALY_TYPE_IDS.items()}
+
+
+# Session state key suffixes that hold detector results (not UI widget state).
+# Used to clear stale results when the active dataset changes.
+_RESULT_SUFFIXES = (
+    "_scores", "_labels_mc", "_train_scores", "_train_labels_mc",
+    "_test_tel", "_test_labels_mc", "_det_ran", "_split_info",
+    "_threshold", "_losses",
+)
+_RESULT_PREFIXES = ("tel_stat", "tel_ml", "tel_deep", "tel_cmp_deep")
+
+
+def _clear_detector_state() -> None:
+    """Remove all detector-result keys from session state."""
+    to_del = [
+        k for k in st.session_state
+        if any(k.endswith(s) for s in _RESULT_SUFFIXES)
+        and any(k.startswith(p) for p in _RESULT_PREFIXES)
+    ]
+    for k in to_del:
+        del st.session_state[k]
+
+
+def _restore_detector_runs(dataset_dir: Path) -> None:
+    """Populate session state from detector runs saved under *dataset_dir*.
+
+    Only fills keys that are not already set (a freshly-computed run takes
+    precedence over a saved one).  For each tab_key only the newest saved
+    run is loaded (list_detector_runs returns newest first).
+    """
+    seen_keys: set[str] = set()
+    for run in list_detector_runs(dataset_dir):
+        meta = run["metadata"]
+        tab_key = meta["tab_key"]
+        if tab_key in seen_keys:
+            continue
+        seen_keys.add(tab_key)
+        if f"{tab_key}_scores" in st.session_state:
+            continue
+        if "scores_test" not in run:
+            continue
+        st.session_state[f"{tab_key}_scores"]      = run["scores_test"]
+        st.session_state[f"{tab_key}_labels_mc"]   = run["labels_mc_test"]
+        st.session_state[f"{tab_key}_det_ran"]     = meta["detector_name"]
+        st.session_state[f"{tab_key}_split_info"]  = meta["split_info"]
+        if "scores_train" in run:
+            st.session_state[f"{tab_key}_train_scores"]    = run["scores_train"]
+            st.session_state[f"{tab_key}_train_labels_mc"] = run["labels_mc_train"]
+        if "test_tel" in run:
+            st.session_state[f"{tab_key}_test_tel"] = run["test_tel"]
+        if "test_labels_mc" in run:
+            st.session_state[f"{tab_key}_test_labels_mc"] = run["test_labels_mc"]
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +157,20 @@ def _sidebar_run_selector() -> None:
             key="tel_active_run_select",
             help="Newest first. All tabs use this run.",
         )
-        st.session_state["tel_active_run"] = run_map[selected]
-        st.caption(f"`{run_map[selected]}`")
+        new_run = run_map[selected]
+        prev_run = st.session_state.get("tel_active_run")
+        prev_name = prev_run.name if isinstance(prev_run, Path) else (
+            Path(prev_run).name if isinstance(prev_run, str) else None
+        )
+        if prev_name in run_map and prev_name != new_run.name:
+            # Genuine switch between two known DEFAULT_DATA_DIR datasets — discard
+            # stale results before loading the new dataset's saved runs.
+            _clear_detector_state()
+        # Always restore: fills only absent keys, so it is safe to call even when
+        # the dataset hasn't changed (e.g. on first load or browser refresh).
+        _restore_detector_runs(new_run)
+        st.session_state["tel_active_run"] = new_run
+        st.caption(f"`{new_run}`")
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +346,7 @@ def _detector_tab(
         test_labels_mc = labels_mc[test_idx].reshape(-1)
         scores = det.score(test_tel)
         train_scores = det.score(train_data)
+        split_info = {"n_train": len(train_idx), "n_test": len(test_idx), "n_total": n}
         st.session_state[f"{tab_key}_scores"] = scores
         st.session_state[f"{tab_key}_labels_mc"] = test_labels_mc
         st.session_state[f"{tab_key}_train_scores"] = train_scores
@@ -287,10 +354,19 @@ def _detector_tab(
         st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
         st.session_state[f"{tab_key}_det_ran"] = detector_name
-        st.session_state[f"{tab_key}_split_info"] = {
-            "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
-        }
+        st.session_state[f"{tab_key}_split_info"] = split_info
         st.session_state.pop(f"{tab_key}_threshold", None)
+        dataset_dir = st.session_state.get("tel_active_run")
+        if dataset_dir is not None:
+            save_detector_run(
+                Path(dataset_dir), tab_key, detector_name,
+                scores, test_labels_mc, train_scores,
+                labels_mc[train_idx].reshape(-1), split_info,
+                test_tel=telemetry[test_idx],
+                test_labels_mc=labels_mc[test_idx],
+                hyperparams={"detector": detector_name, "window": window,
+                             "train_frac": train_frac},
+            )
 
     if f"{tab_key}_scores" not in st.session_state:
         st.info("Click **Run** to fit and score.")
@@ -299,8 +375,8 @@ def _detector_tab(
         tab_key,
         st.session_state[f"{tab_key}_scores"],
         st.session_state[f"{tab_key}_labels_mc"],
-        st.session_state[f"{tab_key}_test_tel"],
-        st.session_state[f"{tab_key}_test_labels_mc"],
+        st.session_state.get(f"{tab_key}_test_tel"),
+        st.session_state.get(f"{tab_key}_test_labels_mc"),
     )
 
 
@@ -308,16 +384,16 @@ def _detector_results_section(
     tab_key: str,
     scores: torch.Tensor,
     labels_mc: torch.Tensor,
-    test_tel: torch.Tensor,
-    test_labels_mc: torch.Tensor,
+    test_tel: torch.Tensor | None,
+    test_labels_mc: torch.Tensor | None,
 ) -> None:
     """Show ROC curve, score distribution, per-type metrics, and time series.
 
     Args:
         scores        : (M*T,) anomaly scores for all test timesteps
         labels_mc     : (M*T,) multi-class labels for all test timesteps
-        test_tel      : (M, T, C) test series for time series display
-        test_labels_mc: (M, T) per-series multi-class labels for display
+        test_tel      : (M, T, C) test series for time series display (optional)
+        test_labels_mc: (M, T) per-series multi-class labels for display (optional)
     """
     split = st.session_state.get(f"{tab_key}_split_info")
     if split:
@@ -409,6 +485,9 @@ def _detector_results_section(
     if type_rows:
         st.table(type_rows)
 
+    if test_tel is None or test_labels_mc is None:
+        st.caption("Time series visualization not available for this run.")
+        return
     st.subheader("Time Series with Anomaly Overlay")
     m = test_tel.shape[0]
     series_idx = _series_slider("Test series index", m, key=f"{tab_key}_series_idx")
@@ -698,6 +777,7 @@ def tab_deep() -> None:
 
         scores = det.score(test_tel)
         train_scores = det.score(train_data)
+        split_info = {"n_train": len(train_idx), "n_test": len(test_idx), "n_total": n}
         st.session_state["tel_deep_scores"] = scores
         st.session_state["tel_deep_labels_mc"] = test_labels_mc
         st.session_state["tel_deep_train_scores"] = train_scores
@@ -706,9 +786,7 @@ def tab_deep() -> None:
         st.session_state["tel_deep_test_labels_mc"] = labels_mc[test_idx]
         st.session_state["tel_deep_det_ran"] = det_name
         st.session_state["tel_deep_losses"] = det.train_losses
-        st.session_state["tel_deep_split_info"] = {
-            "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
-        }
+        st.session_state["tel_deep_split_info"] = split_info
         st.session_state.pop("tel_deep_threshold", None)
 
         # Also write to the per-detector comparison key so the Comparison tab
@@ -721,9 +799,31 @@ def tab_deep() -> None:
         st.session_state[f"{cmp_key}_test_tel"] = telemetry[test_idx]
         st.session_state[f"{cmp_key}_test_labels_mc"] = labels_mc[test_idx]
         st.session_state[f"{cmp_key}_det_ran"] = det_name
-        st.session_state[f"{cmp_key}_split_info"] = {
-            "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
-        }
+        st.session_state[f"{cmp_key}_split_info"] = split_info
+
+        dataset_dir = st.session_state.get("tel_active_run")
+        if dataset_dir is not None:
+            hyperparams = {"detector": det_name, "train_frac": train_frac,
+                           "hidden_size": hidden, "epochs": epochs}
+            if uses_window:
+                hyperparams["window"] = window
+            _dd = Path(dataset_dir)
+            save_detector_run(
+                _dd, "tel_deep", det_name,
+                scores, test_labels_mc, train_scores,
+                labels_mc[train_idx].reshape(-1), split_info,
+                test_tel=telemetry[test_idx],
+                test_labels_mc=labels_mc[test_idx],
+                hyperparams=hyperparams,
+            )
+            save_detector_run(
+                _dd, cmp_key, det_name,
+                scores, test_labels_mc, train_scores,
+                labels_mc[train_idx].reshape(-1), split_info,
+                test_tel=telemetry[test_idx],
+                test_labels_mc=labels_mc[test_idx],
+                hyperparams=hyperparams,
+            )
         st.caption(
             f"Trained on {len(train_idx)}/{n} series, scored on {len(test_idx)}/{n} series."
         )
@@ -753,8 +853,8 @@ def tab_deep() -> None:
         "tel_deep",
         st.session_state["tel_deep_scores"],
         st.session_state["tel_deep_labels_mc"],
-        st.session_state["tel_deep_test_tel"],
-        st.session_state["tel_deep_test_labels_mc"],
+        st.session_state.get("tel_deep_test_tel"),
+        st.session_state.get("tel_deep_test_labels_mc"),
     )
 
 
@@ -827,6 +927,7 @@ def _cmp_run_and_store(
     scores = detector.score(test_tel)
     train_scores = detector.score(train_data)
     n = telemetry.shape[0]
+    split_info = {"n_train": len(train_idx), "n_test": len(test_idx), "n_total": n}
     st.session_state[f"{tab_key}_scores"] = scores
     st.session_state[f"{tab_key}_labels_mc"] = labels_mc[test_idx].reshape(-1)
     st.session_state[f"{tab_key}_train_scores"] = train_scores
@@ -834,10 +935,19 @@ def _cmp_run_and_store(
     st.session_state[f"{tab_key}_test_tel"] = telemetry[test_idx]
     st.session_state[f"{tab_key}_test_labels_mc"] = labels_mc[test_idx]
     st.session_state[f"{tab_key}_det_ran"] = det_name
-    st.session_state[f"{tab_key}_split_info"] = {
-        "n_train": len(train_idx), "n_test": len(test_idx), "n_total": n,
-    }
+    st.session_state[f"{tab_key}_split_info"] = split_info
     st.session_state.pop(f"{tab_key}_threshold", None)
+    dataset_dir = st.session_state.get("tel_active_run")
+    if dataset_dir is not None:
+        save_detector_run(
+            Path(dataset_dir), tab_key, det_name,
+            scores, labels_mc[test_idx].reshape(-1),
+            train_scores, labels_mc[train_idx].reshape(-1),
+            split_info,
+            test_tel=telemetry[test_idx],
+            test_labels_mc=labels_mc[test_idx],
+            hyperparams={"train_frac": train_frac},
+        )
 
 
 def tab_comparison() -> None:
